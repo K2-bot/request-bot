@@ -144,6 +144,7 @@ def cb_error_report_cancel(call):
     if call.data == "error_cancel":
         reset_state(user_id)
         bot.send_message(user_id, "⭕️ Error Report မလုပ်တော့ပါဘူး")
+        bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
     else:
         data = user_states[user_id]["data"]
         reset_state(user_id)
