@@ -1,10 +1,12 @@
 import os
 import time
 import threading
+from keep_alive import keep_alive
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from telebot import TeleBot, types
 from supabase import create_client
+
 
 # ✅ Environment Variable တွေ load ပြုလုပ်ခြင်း
 load_dotenv()
@@ -310,6 +312,7 @@ def cleanup_done_or_error_orders():
 
 # ✅ Main Run Block
 if __name__ == '__main__':
+    keep_alive()
     threading.Thread(target=poll_new_orders, daemon=True).start()
     threading.Thread(target=cleanup_done_or_error_orders, daemon=True).start()
     print("🤖 K2 Bot is running...")
