@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from telebot import TeleBot, types
 from supabase import create_client
 
-
 # ✅ Environment Variable တွေ load ပြုလုပ်ခြင်း
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -38,6 +37,7 @@ def reset_state(user_id):
     if user_id in user_states:
         del user_states[user_id]
 
+# ✅ /start
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     if message.chat.type != "private":
@@ -52,7 +52,7 @@ def cmd_start(message):
     text = (
         "🎉 Hello! Welcome to K2 Bot.\n\n"
         "ကျနော်တို့ရဲ့ K2Boost ဆိုတဲ့ Telegram Channel လေးကို Join ပေးကြပါအုံး။✅\n\n"
-        "[ [https://t.me/K2_Boost](https://t.me/K2_Boost) ]"
+        "[ https://t.me/K2_Boost ]"
     )
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
@@ -62,7 +62,7 @@ def cmd_start(message):
     )
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
-# --- Request Flow ---
+# ✅ Request Flow
 @bot.callback_query_handler(func=lambda c: c.data == "request")
 def cb_request(call):
     user_id = call.from_user.id
@@ -88,8 +88,6 @@ def cb_request_cancel(call):
     bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
 
 @bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get("mode") == "request")
-
-# --- Request Flow ---
 def handle_request_message(message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -100,7 +98,7 @@ def handle_request_message(message):
     reset_state(user_id)
     bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
 
-# --- Error Report Flow ---
+# ✅ Error Report Flow
 @bot.callback_query_handler(func=lambda c: c.data == "error")
 def cb_error_start(call):
     user_id = call.from_user.id
@@ -144,15 +142,12 @@ def cb_error_report_cancel(call):
     if call.data == "error_cancel":
         reset_state(user_id)
         bot.send_message(user_id, "⭕️ Error Report မလုပ်တော့ပါဘူး")
-         reset_state(user_id)
-    bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
+        bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
     else:
         data = user_states[user_id]["data"]
         reset_state(user_id)
         bot.send_message(user_id, "🛠 Error ပြဿနာဖြေရှင်းရန် စာတင်ပြီးပါပြီ 💯\n\n‌ဖြေရှင်းပြီးပါက Reason နှင့်တကွ ပြန်လည်အသိပေးပါမည်⚠️")
-        bot.answer_callback_query(call.id)
         bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
-
         username = call.from_user.username or call.from_user.first_name
         error_text = (
             f"🚨 New Error Report \n\n @{username} (ID: {user_id}):\n\n"
@@ -162,9 +157,7 @@ def cb_error_report_cancel(call):
         )
         bot.send_message(ADMIN_GROUP_ID, error_text)
 
-# ✂️ Remaining parts (Admin Commands / Polling / Cleanup) stay the same...
-
-# --- Admin Message Command to Users ---
+# ✅ Admin Commands
 @bot.message_handler(commands=['S'])
 def admin_send_user(message):
     if message.chat.id != ADMIN_GROUP_ID:
@@ -218,7 +211,7 @@ def handle_error(message):
     supabase.rpc("increment_user_balance", {"user_email": email, "amount": amount})
     bot.reply_to(message, f"🔁 Order {order_id} marked as Error.\n\n {amount} Ks refunded to {email}☑️")
 
-# --- Ban / Unban Commands ---
+# ✅ Ban / Unban
 @bot.message_handler(commands=['Ban'])
 def handle_ban_user(message):
     if message.chat.id != ADMIN_GROUP_ID:
@@ -251,18 +244,14 @@ def handle_unban_user(message):
     else:
         bot.reply_to(message, f"ℹ️ @{username} ကို Ban မထားပါ။")
 
-# ✅ Banned user တွေက message မပို့နိုင်အောင် block
+# ✅ Block banned user messages
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def block_banned_users(message):
     if message.chat.type == "private" and message.from_user.id in banned_user_ids:
         bot.send_message(message.chat.id, "🚫 သင်အား Bot အသုံးပြုခွင့်ပိတ်ထားပါသည်။")
         return
 
-# --- Order Done / Error ---
-
-# ✅ Background Task: Order Polling
-from datetime import datetime, timedelta
-
+# ✅ Poll new orders
 def poll_new_orders():
     global latest_order_id
     while True:
@@ -272,38 +261,31 @@ def poll_new_orders():
                 for order in orders.data:
                     if order['id'] > latest_order_id:
                         latest_order_id = order['id']
-                        
-                        # Convert UTC -> MMT
                         utc_time = datetime.fromisoformat(order['created_at'].replace("Z", "+00:00"))
                         mm_time = utc_time + timedelta(hours=6, minutes=30)
                         formatted_time = mm_time.strftime("%Y-%m-%d %H:%M")
-
-                        # Get duration
                         duration = order.get('duration', 'N/A')
-
                         msg = (
                             f"📦 OrderID: {order['id']}\n\n"
                             f"👤 Email: {order['email']}\n\n"
                             f"🛒 Service: {order['service']}\n"
                             f"🔴 Quantity: {order['quantity']}\n\n"
-                            f"📆 Duration: {duration} ရက်\n\n"
+                        f"📆 Duration: {duration} ရက်\n\n"
                             f"💰 Amount: {order['amount']} Ks\n"
                             f"🔗 Link: {order['link']}\n\n"
                             f"🕧 Order Time - {formatted_time} (MMT)"
                         )
-
                         bot.send_message(ADMIN_GROUP_ID, msg)
         except Exception as e:
             print("Polling Error:", e)
         time.sleep(5)
-        
-        # ✅ Background Task: Delete Old Orders
+
+# ✅ Cleanup old orders
 def cleanup_done_or_error_orders():
     while True:
         try:
             cutoff = datetime.now(timezone.utc) - timedelta(days=3)
-            old_orders = supabase.table("orders").select("id, created_at")\
-                .in_("status", ["Done", "Error"]).lt("created_at", cutoff.isoformat()).execute()
+            old_orders = supabase.table("orders").select("id, created_at").in_("status", ["Done", "Error"]).lt("created_at", cutoff.isoformat()).execute()
             if old_orders.data:
                 for order in old_orders.data:
                     supabase.table("orders").delete().eq("id", order["id"]).execute()
