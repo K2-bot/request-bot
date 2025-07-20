@@ -213,24 +213,40 @@ def handle_error(message):
     bot.reply_to(message, f"🔁 Order {order_id} marked as Error.\n\n {amount} Ks refunded to {email}☑️")
 
 @bot.message_handler(commands=['Refund'])
-def refund_user_balance(message):
+def handle_manual_refund(message):
     if message.chat.id != ADMIN_GROUP_ID:
         return
+
     parts = message.text.split()
-    if len(parts) != 3:
-        bot.reply_to(message, "Usage: /Refund email@example.com 1500")
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: /Refund email amount")
         return
+
     email = parts[1]
     try:
-        amount = float(parts[2])
+        amount = int(parts[2])
     except ValueError:
-        bot.reply_to(message, "❌ Amount မှာ Number ထည့်ပါ။")
+        bot.reply_to(message, "Invalid amount format.")
         return
-    try:
-        supabase.rpc("increment_user_balance", {"user_email": email, "amount": amount})
-        bot.reply_to(message, f"✅ {amount} Ks ကို {email} ထံ Refund ပြန်လုပ်ပြီးပါပြီ။")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Refund Error: {str(e)}")
+
+    # Fetch user
+    result = supabase.table('Users').select("id,balance").eq("email", email).execute()
+    if not result.data or len(result.data) == 0:
+        bot.reply_to(message, "❌ User not found.")
+        return
+
+    user = result.data[0]
+    old_balance = user['balance']
+    new_balance = old_balance + amount
+
+    # Update balance
+    update_result = supabase.table('Users').update({'balance': new_balance}).eq("id", user['id']).execute()
+    
+    if not update_result.data:
+        bot.reply_to(message, "❌ Failed to update balance.")
+        return
+
+    bot.reply_to(message, f"✅ Refunded {amount} Ks to {email}.\n💰 Balance: {old_balance} ➜ {new_balance}")
 
 @bot.message_handler(commands=['Clean'])
 def clean_old_orders(message):
