@@ -219,34 +219,35 @@ def handle_manual_refund(message):
 
     parts = message.text.split()
     if len(parts) < 3:
-        bot.reply_to(message, "Usage: /Refund email amount")
+        bot.reply_to(message, "📌 သုံးပုံမှန် /Refund email amount လို့ရေးပေးပါ။")
         return
 
     email = parts[1]
     try:
         amount = int(parts[2])
     except ValueError:
-        bot.reply_to(message, "Invalid amount format.")
+        bot.reply_to(message, "❌ amount ဟာ ဂဏန်းဖြစ်ရမယ်။ ဥပမာ - /Refund user@gmail.com 500")
         return
 
-    # Fetch user
-    result = supabase.table('Users').select("id,balance").eq("email", email).execute()
+    # Supabase မှာ email ဖြင့် user ရှာခြင်း
+    result = supabase.table('Users').select("id, balance").eq("email", email).execute()
+
     if not result.data or len(result.data) == 0:
-        bot.reply_to(message, "❌ User not found.")
+        bot.reply_to(message, "❌ User ကိုမတွေ့ပါ။ Email မှန်မှန်ပေးပို့ပါ။")
         return
 
     user = result.data[0]
-    old_balance = user['balance']
+    old_balance = user['balance'] or 0
     new_balance = old_balance + amount
 
-    # Update balance
-    update_result = supabase.table('Users').update({'balance': new_balance}).eq("id", user['id']).execute()
-    
-    if not update_result.data:
-        bot.reply_to(message, "❌ Failed to update balance.")
+    # Supabase မှာ balance ကို update လုပ်ခြင်း
+    update = supabase.table('Users').update({'balance': new_balance}).eq("id", user['id']).execute()
+
+    if update.error:
+        bot.reply_to(message, "⚠️ Balance ပြန်ပေးရာတွင် Error ဖြစ်နေပါသည်။")
         return
 
-    bot.reply_to(message, f"✅ Refunded {amount} Ks to {email}.\n💰 Balance: {old_balance} ➜ {new_balance}")
+    bot.reply_to(message, f"✅ {email} ကို {amount} Ks ပြန်အမ်းလိုက်ပါပြီ။\n💰 Balance: {old_balance} ➜ {new_balance}")
 
 @bot.message_handler(commands=['Clean'])
 def clean_old_orders(message):
