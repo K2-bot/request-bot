@@ -157,7 +157,42 @@ def cb_error_report_cancel(call):
             f"Step 3: {data.get('email_order','')}\n"
         )
         bot.send_message(ADMIN_GROUP_ID, error_text)
+@bot.message_handler(commands=['Refund'])
+def handle_manual_refund(message):
+    if message.chat.id != ADMIN_GROUP_ID:
+        return
 
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "📌 သုံးပုံမှန် /Refund email amount လို့ရေးပေးပါ။")
+        return
+
+    email = parts[1]
+    try:
+        amount = int(parts[2])
+    except ValueError:
+        bot.reply_to(message, "❌ amount ဟာ ဂဏန်းဖြစ်ရမယ်။ ဥပမာ - /Refund user@gmail.com 500")
+        return
+
+    # Supabase မှာ email ဖြင့် user ရှာခြင်း
+    result = supabase.table('Users').select("id, balance").eq("email", email).execute()
+
+    if not result.data or len(result.data) == 0:
+        bot.reply_to(message, "❌ User ကိုမတွေ့ပါ။ Email မှန်မှန်ပေးပို့ပါ။")
+        return
+
+    user = result.data[0]
+    old_balance = user['balance'] or 0
+    new_balance = old_balance + amount
+
+    # Supabase မှာ balance ကို update လုပ်ခြင်း
+    update = supabase.table('Users').update({'balance': new_balance}).eq("id", user['id']).execute()
+
+    if update.error:
+        bot.reply_to(message, "⚠️ Balance ပြန်ပေးရာတွင် Error ဖြစ်နေပါသည်။")
+        return
+
+    bot.reply_to(message, f"✅ {email} ကို {amount} Ks ပြန်အမ်းလိုက်ပါပြီ။\n💰 Balance: {old_balance} ➜ {new_balance}")
 # ✅ Admin Commands (S, Done, Error, Refund, Clean, Ban, Unban) — Already Correct — Continue Below# ✅ Admin Commands
 @bot.message_handler(commands=['S'])
 def admin_send_user(message):
@@ -212,42 +247,7 @@ def handle_error(message):
     supabase.rpc("increment_user_balance", {"user_email": email, "amount": amount})
     bot.reply_to(message, f"🔁 Order {order_id} marked as Error.\n\n {amount} Ks refunded to {email}☑️")
 
-@bot.message_handler(commands=['Refund'])
-def handle_manual_refund(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
 
-    parts = message.text.split()
-    if len(parts) < 3:
-        bot.reply_to(message, "📌 သုံးပုံမှန် /Refund email amount လို့ရေးပေးပါ။")
-        return
-
-    email = parts[1]
-    try:
-        amount = int(parts[2])
-    except ValueError:
-        bot.reply_to(message, "❌ amount ဟာ ဂဏန်းဖြစ်ရမယ်။ ဥပမာ - /Refund user@gmail.com 500")
-        return
-
-    # Supabase မှာ email ဖြင့် user ရှာခြင်း
-    result = supabase.table('Users').select("id, balance").eq("email", email).execute()
-
-    if not result.data or len(result.data) == 0:
-        bot.reply_to(message, "❌ User ကိုမတွေ့ပါ။ Email မှန်မှန်ပေးပို့ပါ။")
-        return
-
-    user = result.data[0]
-    old_balance = user['balance'] or 0
-    new_balance = old_balance + amount
-
-    # Supabase မှာ balance ကို update လုပ်ခြင်း
-    update = supabase.table('Users').update({'balance': new_balance}).eq("id", user['id']).execute()
-
-    if update.error:
-        bot.reply_to(message, "⚠️ Balance ပြန်ပေးရာတွင် Error ဖြစ်နေပါသည်။")
-        return
-
-    bot.reply_to(message, f"✅ {email} ကို {amount} Ks ပြန်အမ်းလိုက်ပါပြီ။\n💰 Balance: {old_balance} ➜ {new_balance}")
 
 @bot.message_handler(commands=['Clean'])
 def clean_old_orders(message):
