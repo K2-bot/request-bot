@@ -158,50 +158,6 @@ def cb_error_report_cancel(call):
         )
         bot.send_message(ADMIN_GROUP_ID, error_text)
         
-@bot.message_handler(commands=['Refund'])
-def handle_manual_refund_by_order(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: /Refund OrderID")
-        return
-
-    try:
-        order_id = int(parts[1])
-    except ValueError:
-        bot.reply_to(message, "Invalid Order ID.")
-        return
-
-    # Step 1: Get Order Info
-    order_result = supabase.table('Orders').select("email, amount").eq("id", order_id).execute()
-    if not order_result.data:
-        bot.reply_to(message, f"❌ Order ID {order_id} not found.")
-        return
-
-    order = order_result.data[0]
-    email = order['email']
-    amount = order['amount']
-
-    # Step 2: Get User Info
-    user_result = supabase.table('Users').select("id, balance").eq("email", email).execute()
-    if not user_result.data:
-        bot.reply_to(message, f"❌ User with email {email} not found.")
-        return
-
-    user = user_result.data[0]
-    old_balance = user['balance'] or 0
-    new_balance = old_balance + amount
-
-    # Step 3: Update User Balance
-    update = supabase.table('Users').update({'balance': new_balance}).eq("id", user['id']).execute()
-    if update.error:
-        bot.reply_to(message, "⚠️ Failed to update balance.")
-        return
-
-    bot.reply_to(message, f"✅ Refunded {amount} Ks to {email}. Balance: {old_balance} ➜ {new_balance}")
-    
 # ✅ Admin Commands (S, Done, Error, Refund, Clean, Ban, Unban) — Already Correct — Continue Below# ✅ Admin Commands
 @bot.message_handler(commands=['S'])
 def admin_send_user(message):
@@ -322,7 +278,37 @@ def block_banned_users(message):
     if message.chat.type == "private" and message.from_user.id in banned_user_ids:
         bot.send_message(message.chat.id, "🚫 သင်အား Bot အသုံးပြုခွင့်ပိတ်ထားပါသည်။")
         return
+@bot.message_handler(commands=['RefundOrder'])
+def handle_refund_by_order(message):
+    if message.chat.id != ADMIN_GROUP_ID:
+        return
 
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /RefundOrder <OrderID>")
+        return
+
+    try:
+        order_id = int(parts[1])
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid Order ID format.")
+        return
+
+    try:
+        # Call Supabase function
+        rpc_result = supabase.rpc('manual_refund_by_order', {
+            'order_id': order_id
+        }).execute()
+
+        if rpc_result.error:
+            bot.reply_to(message, "❌ Refund failed: " + str(rpc_result.error))
+        else:
+            bot.reply_to(message, f"✅ Refunded balance for Order ID {order_id}.")
+
+    except Exception as e:
+        print("Refund by order error:", e)
+        bot.reply_to(message, "❌ Unexpected error occurred.")
+                     
 # ✅ Poll new orders
 def poll_new_orders():
     global latest_order_id
