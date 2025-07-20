@@ -1,3 +1,4 @@
+
 import os
 import time
 import threading
@@ -6,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from telebot import TeleBot, types
 from supabase import create_client
+from dateutil import parser
 
 # ✅ Environment Variable တွေ load ပြုလုပ်ခြင်း
 load_dotenv()
@@ -32,7 +34,6 @@ ERROR_PROMPTS = [
     "4. Error ဖြစ်မဖြစ်သေချာ စစ်ဆေးပါ💣\n\nဥပမာ Order Error က ကြာချိန်ဆိုရင် ပြောပြထားတဲ့အချိန်ထက်ကျော်မှ Complain တင်ပါ 📊\n\nError က Password မေ့တဲ့ပြဿနာတွေဆိုရင် မဖြေရှင်းပေးပါ❌\n\nOrder Cancel ခံရတယ်ဆိုရင် ဘာကြောင့် Cancel ခံရလဲဆိုတာကို ကျနော်တို့ Reason ရေးပေးထားပါတယ်။✅\n\nကိုယ်ဘက်က အမှားမရှိဘူးဆိုမှ သေချာစစ်ဆေးပြီး ရေးသားဖို့အတွက် မေတ္တာရပ်ခံပါတယ်ရှင့်🤗"
 ]
 
-# ✅ user_states Reset Function
 def reset_state(user_id):
     if user_id in user_states:
         del user_states[user_id]
@@ -120,7 +121,7 @@ def handle_error_steps(message):
         bot.send_message(user_id, ERROR_PROMPTS[step])
     elif step == 3:
         if "@" not in text:
-            bot.send_message(user_id, "❌ Email ပါအောင်ရိုက်ထည့်ပါ။ ")
+            bot.send_message(user_id, "❌ Email ပါအောင်ရိုက်ထည့်ပါ။")
             return
         state["data"]["email_order"] = text
         state["step"] = 4
@@ -157,7 +158,7 @@ def cb_error_report_cancel(call):
         )
         bot.send_message(ADMIN_GROUP_ID, error_text)
 
-# ✅ Admin Commands
+# ✅ Admin Commands (S, Done, Error, Refund, Clean, Ban, Unban) — Already Correct — Continue Below# ✅ Admin Commands
 @bot.message_handler(commands=['S'])
 def admin_send_user(message):
     if message.chat.id != ADMIN_GROUP_ID:
@@ -211,7 +212,52 @@ def handle_error(message):
     supabase.rpc("increment_user_balance", {"user_email": email, "amount": amount})
     bot.reply_to(message, f"🔁 Order {order_id} marked as Error.\n\n {amount} Ks refunded to {email}☑️")
 
-# ✅ Ban / Unban
+@bot.message_handler(commands=['Refund'])
+def refund_user_balance(message):
+    if message.chat.id != ADMIN_GROUP_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 3:
+        bot.reply_to(message, "Usage: /Refund email@example.com 1500")
+        return
+    email = parts[1]
+    try:
+        amount = float(parts[2])
+    except ValueError:
+        bot.reply_to(message, "❌ Amount မှာ Number ထည့်ပါ။")
+        return
+    try:
+        supabase.rpc("increment_user_balance", {"user_email": email, "amount": amount})
+        bot.reply_to(message, f"✅ {amount} Ks ကို {email} ထံ Refund ပြန်လုပ်ပြီးပါပြီ။")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Refund Error: {str(e)}")
+
+@bot.message_handler(commands=['Clean'])
+def clean_old_orders(message):
+    if message.chat.id != ADMIN_GROUP_ID:
+        return
+    parts = message.text.split()
+    if len(parts) != 2 or parts[1] != "3Day":
+        bot.reply_to(message, "Usage: /Clean 3Day")
+        return
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+        old_orders = supabase.table("orders") \
+            .select("id, created_at") \
+            .in_("status", ["Done", "Error"]) \
+            .lt("created_at", cutoff.isoformat()) \
+            .execute()
+        deleted_ids = []
+        if old_orders.data:
+            for order in old_orders.data:
+                supabase.table("orders").delete().eq("id", order["id"]).execute()
+                deleted_ids.append(str(order["id"]))
+        if deleted_ids:
+            bot.reply_to(message, f"🗑 Deleted Orders: {', '.join(deleted_ids)}")
+        else:
+            bot.reply_to(message, "ℹ️ မဖျက်ရသေးတဲ့ 3 ရက်ထပ်ကျော်သော Done/Error orders မရှိပါ။")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Error: {str(e)}")
 @bot.message_handler(commands=['Ban'])
 def handle_ban_user(message):
     if message.chat.id != ADMIN_GROUP_ID:
@@ -261,7 +307,7 @@ def poll_new_orders():
                 for order in orders.data:
                     if order['id'] > latest_order_id:
                         latest_order_id = order['id']
-                        utc_time = datetime.fromisoformat(order['created_at'].replace("Z", "+00:00"))
+                        utc_time = parser.parse(order['created_at'])
                         mm_time = utc_time + timedelta(hours=6, minutes=30)
                         formatted_time = mm_time.strftime("%Y-%m-%d %H:%M")
                         duration = order.get('duration', 'N/A')
@@ -270,7 +316,7 @@ def poll_new_orders():
                             f"👤 Email: {order['email']}\n\n"
                             f"🛒 Service: {order['service']}\n"
                             f"🔴 Quantity: {order['quantity']}\n\n"
-                        f"📆 Duration: {duration} ရက်\n\n"
+                            f"📆 Duration: {duration} ရက်\n\n"
                             f"💰 Amount: {order['amount']} Ks\n"
                             f"🔗 Link: {order['link']}\n\n"
                             f"🕧 Order Time - {formatted_time} (MMT)"
@@ -280,24 +326,9 @@ def poll_new_orders():
             print("Polling Error:", e)
         time.sleep(5)
 
-# ✅ Cleanup old orders
-def cleanup_done_or_error_orders():
-    while True:
-        try:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=3)
-            old_orders = supabase.table("orders").select("id, created_at").in_("status", ["Done", "Error"]).lt("created_at", cutoff.isoformat()).execute()
-            if old_orders.data:
-                for order in old_orders.data:
-                    supabase.table("orders").delete().eq("id", order["id"]).execute()
-                    print(f"🗑 Deleted old order {order['id']}")
-        except Exception as e:
-            print("Cleanup Error:", e)
-        time.sleep(3600)
-
-# ✅ Main Run Block
+# ✅ Main Entry Point
 if __name__ == '__main__':
     keep_alive()
     threading.Thread(target=poll_new_orders, daemon=True).start()
-    threading.Thread(target=cleanup_done_or_error_orders, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
