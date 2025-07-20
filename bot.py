@@ -173,7 +173,7 @@ def admin_send_user(message):
     if not user_id:
         bot.reply_to(message, f"❌ User @{username} ကို မတွေ့ပါ။")
         return
-    bot.send_message(user_id, f"K2 မှ Message♻️:\n\n{send_text}✅")
+    bot.send_message(user_id, f"K2 မှ Message♻️:\n\n{send_text}")
     bot.reply_to(message, f"Message ကို @{username} ဆီသို့ ပို့ပြီးပါပြီ။✅")
 
 @bot.message_handler(commands=['Done'])
@@ -209,39 +209,8 @@ def handle_error(message):
     email = order.data[0]['email']
     amount = order.data[0]['amount']
     supabase.table("orders").update({"status": "Error", "reason": reason}).eq("id", order_id).execute()
-    supabase.rpc("increment_user_balance", {"user_email": email, "amount": amount})
-    bot.reply_to(message, f"🔁 Order {order_id} marked as Error.\n\n {amount} Ks refunded to {email}☑️")
+    bot.reply_to(message, f"🔁 Order {order_id} marked as Error.\n\n )
 
-@bot.message_handler(commands=['RefundOrder'])
-def handle_refund_by_order(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: /RefundOrder <OrderID>")
-        return
-
-    try:
-        order_id = int(parts[1])
-    except ValueError:
-        bot.reply_to(message, "❌ Invalid Order ID format.")
-        return
-
-    try:
-        # Call Supabase function
-        rpc_result = supabase.rpc('manual_refund_by_order', {
-            'order_id': order_id
-        }).execute()
-
-        if rpc_result.error:
-            bot.reply_to(message, "❌ Refund failed: " + str(rpc_result.error))
-        else:
-            bot.reply_to(message, f"✅ Refunded balance for Order ID {order_id}.")
-
-    except Exception as e:
-        print("Refund by order error:", e)
-        bot.reply_to(message, "❌ Unexpected error occurred.")
 
 @bot.message_handler(commands=['Clean'])
 def clean_old_orders(message):
