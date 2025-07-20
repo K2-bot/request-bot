@@ -212,7 +212,36 @@ def handle_error(message):
     supabase.rpc("increment_user_balance", {"user_email": email, "amount": amount})
     bot.reply_to(message, f"🔁 Order {order_id} marked as Error.\n\n {amount} Ks refunded to {email}☑️")
 
+@bot.message_handler(commands=['RefundOrder'])
+def handle_refund_by_order(message):
+    if message.chat.id != ADMIN_GROUP_ID:
+        return
 
+    parts = message.text.split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /RefundOrder <OrderID>")
+        return
+
+    try:
+        order_id = int(parts[1])
+    except ValueError:
+        bot.reply_to(message, "❌ Invalid Order ID format.")
+        return
+
+    try:
+        # Call Supabase function
+        rpc_result = supabase.rpc('manual_refund_by_order', {
+            'order_id': order_id
+        }).execute()
+
+        if rpc_result.error:
+            bot.reply_to(message, "❌ Refund failed: " + str(rpc_result.error))
+        else:
+            bot.reply_to(message, f"✅ Refunded balance for Order ID {order_id}.")
+
+    except Exception as e:
+        print("Refund by order error:", e)
+        bot.reply_to(message, "❌ Unexpected error occurred.")
 
 @bot.message_handler(commands=['Clean'])
 def clean_old_orders(message):
@@ -278,36 +307,6 @@ def block_banned_users(message):
     if message.chat.type == "private" and message.from_user.id in banned_user_ids:
         bot.send_message(message.chat.id, "🚫 သင်အား Bot အသုံးပြုခွင့်ပိတ်ထားပါသည်။")
         return
-@bot.message_handler(commands=['RefundOrder'])
-def handle_refund_by_order(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: /RefundOrder <OrderID>")
-        return
-
-    try:
-        order_id = int(parts[1])
-    except ValueError:
-        bot.reply_to(message, "❌ Invalid Order ID format.")
-        return
-
-    try:
-        # Call Supabase function
-        rpc_result = supabase.rpc('manual_refund_by_order', {
-            'order_id': order_id
-        }).execute()
-
-        if rpc_result.error:
-            bot.reply_to(message, "❌ Refund failed: " + str(rpc_result.error))
-        else:
-            bot.reply_to(message, f"✅ Refunded balance for Order ID {order_id}.")
-
-    except Exception as e:
-        print("Refund by order error:", e)
-        bot.reply_to(message, "❌ Unexpected error occurred.")
                      
 # ✅ Poll new orders
 def poll_new_orders():
