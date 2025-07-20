@@ -157,42 +157,51 @@ def cb_error_report_cancel(call):
             f"Step 3: {data.get('email_order','')}\n"
         )
         bot.send_message(ADMIN_GROUP_ID, error_text)
+        
 @bot.message_handler(commands=['Refund'])
-def handle_manual_refund(message):
+def handle_manual_refund_by_order(message):
     if message.chat.id != ADMIN_GROUP_ID:
         return
 
     parts = message.text.split()
-    if len(parts) < 3:
-        bot.reply_to(message, "📌 သုံးပုံမှန် /Refund email amount လို့ရေးပေးပါ။")
+    if len(parts) < 2:
+        bot.reply_to(message, "Usage: /Refund OrderID")
         return
 
-    email = parts[1]
     try:
-        amount = int(parts[2])
+        order_id = int(parts[1])
     except ValueError:
-        bot.reply_to(message, "❌ amount ဟာ ဂဏန်းဖြစ်ရမယ်။ ဥပမာ - /Refund user@gmail.com 500")
+        bot.reply_to(message, "Invalid Order ID.")
         return
 
-    # Supabase မှာ email ဖြင့် user ရှာခြင်း
-    result = supabase.table('Users').select("id, balance").eq("email", email).execute()
-
-    if not result.data or len(result.data) == 0:
-        bot.reply_to(message, "❌ User ကိုမတွေ့ပါ။ Email မှန်မှန်ပေးပို့ပါ။")
+    # Step 1: Get Order Info
+    order_result = supabase.table('Orders').select("email, amount").eq("id", order_id).execute()
+    if not order_result.data:
+        bot.reply_to(message, f"❌ Order ID {order_id} not found.")
         return
 
-    user = result.data[0]
+    order = order_result.data[0]
+    email = order['email']
+    amount = order['amount']
+
+    # Step 2: Get User Info
+    user_result = supabase.table('Users').select("id, balance").eq("email", email).execute()
+    if not user_result.data:
+        bot.reply_to(message, f"❌ User with email {email} not found.")
+        return
+
+    user = user_result.data[0]
     old_balance = user['balance'] or 0
     new_balance = old_balance + amount
 
-    # Supabase မှာ balance ကို update လုပ်ခြင်း
+    # Step 3: Update User Balance
     update = supabase.table('Users').update({'balance': new_balance}).eq("id", user['id']).execute()
-
     if update.error:
-        bot.reply_to(message, "⚠️ Balance ပြန်ပေးရာတွင် Error ဖြစ်နေပါသည်။")
+        bot.reply_to(message, "⚠️ Failed to update balance.")
         return
 
-    bot.reply_to(message, f"✅ {email} ကို {amount} Ks ပြန်အမ်းလိုက်ပါပြီ။\n💰 Balance: {old_balance} ➜ {new_balance}")
+    bot.reply_to(message, f"✅ Refunded {amount} Ks to {email}. Balance: {old_balance} ➜ {new_balance}")
+    
 # ✅ Admin Commands (S, Done, Error, Refund, Clean, Ban, Unban) — Already Correct — Continue Below# ✅ Admin Commands
 @bot.message_handler(commands=['S'])
 def admin_send_user(message):
