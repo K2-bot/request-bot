@@ -551,7 +551,7 @@ def update_order_status_in_supabase(order_id, new_status):
 def poll_smmgen_orders_status():
     while True:
         # "Processing" + "In progress" ကိုစစ်မယ်
-        response = supabase.table("orders").select("*").in_("status", ["Processing", "In progress"]).execute()
+        response = supabase.table("orders").select("*").in_("status", ["Processing","Pending" , "In progress"]).execute()
         orders = response.data if response.data else []
         
         for order in orders:
@@ -576,3 +576,4 @@ if __name__ == '__main__':
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
