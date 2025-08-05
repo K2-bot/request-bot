@@ -9,7 +9,25 @@ from supabase import create_client
 from dateutil import parser
 import requests
 
-# SMMGEN API Key ကို Environment Variable ကနေယူသည်
+load_dotenv()
+TOKEN = os.getenv("TOKEN")
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+SMMGEN_API_KEY = os.getenv("SMMGEN_API_KEY")
+REAL_BOOST_GROUP_ID = os.getenv("REAL_BOOST_GROUP_ID")  # /Done, /Error
+FAKE_BOOST_GROUP_ID = os.getenv("FAKE_BOOST_GROUP_ID")  # /Buy
+
+
+# Bot နှင့် Supabase Client ကို Initialize လုပ်ခြင်း
+bot = TeleBot(TOKEN)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# အသုံးပြုသူ state များ
+user_states = {}
+user_chatids_by_username = {}
+latest_order_id = 0
+banned_user_ids = set()
 
 def send_to_smmgen(order):
     url = "https://smmgen.io/api/v2"
@@ -79,28 +97,6 @@ def send_to_smmgen(order):
             FAKE_BOOST_GROUP_ID,
             f"❌ SMMGEN Order အတွက် {order['id']} တွင် Exception ဖြစ်ပွားခဲ့သည်:\n{str(e)}"
         )
-
-
-# Environment Variable တွေကို load လုပ်ခြင်း
-load_dotenv()
-TOKEN = os.getenv("TOKEN")
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SMMGEN_API_KEY = os.getenv("SMMGEN_API_KEY")
-REAL_BOOST_GROUP_ID = os.getenv("REAL_BOOST_GROUP_ID")  # /Done, /Error
-FAKE_BOOST_GROUP_ID = os.getenv("FAKE_BOOST_GROUP_ID")  # /Buy
-
-
-# Bot နှင့် Supabase Client ကို Initialize လုပ်ခြင်း
-bot = TeleBot(TOKEN)
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# အသုံးပြုသူ state များ
-user_states = {}
-user_chatids_by_username = {}
-latest_order_id = 0
-banned_user_ids = set()
 
 # Error Prompt Text
 ERROR_PROMPTS = [
@@ -576,4 +572,5 @@ if __name__ == '__main__':
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
