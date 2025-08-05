@@ -311,45 +311,64 @@ def admin_send_user(message):
     
 @bot.message_handler(commands=['Done'])
 def handle_done(message):
-    if message.chat.id != REAL_BOOST_GROUP_ID:
+    print(f"[DEBUG] message.text: {repr(message.text)}")
+    print(f"[DEBUG] chat.id: {message.chat.id}, REAL_BOOST_GROUP_ID: {REAL_BOOST_GROUP_ID}")
+
+    if str(message.chat.id) != str(REAL_BOOST_GROUP_ID):
+        bot.reply_to(message, "⚠️ ဒီ command ကို သတ်မှတ်ထားတဲ့ Group ထဲမှာပဲ သုံးလို့ရပါတယ်။")
         return
+
     parts = message.text.split(maxsplit=2)
     if len(parts) < 2:
-        bot.reply_to(message, "Usage: /Done <order_id> [reason]")
+        bot.reply_to(message, "🔧 သုံးပုံ မှားနေပါတယ်။\n\nမှန်ကန်သော Format:\n/Done <order_id> [optional_reason]\nဥပမာ: /Done 123 မှန်ပြီ")
         return
-    order_id = parts[1]
-    reason = parts[2] if len(parts) > 2 else "Completed"
-    result = supabase.table("orders").update({"status": "Done", "reason": reason}).eq("id", order_id).execute()
+
+    order_id = parts[1].strip()
+    reason = parts[2].strip() if len(parts) > 2 else "Completed"
+
+    result = supabase.table("orders").update({
+        "status": "Done",
+        "reason": reason
+    }).eq("id", order_id).execute()
+
+    print(f"[DEBUG] Supabase update result: {result}")
+
     if result.data:
-        bot.reply_to(message, f"✅ Order {order_id} ကို Done အဖြစ်သတ်မှတ်ပြီးပါပြီ။")
+        bot.reply_to(message, f"✅ Order {order_id} ကို Done အဖြစ် သတ်မှတ်ပြီးပါပြီ။")
     else:
         bot.reply_to(message, f"❌ Order ID {order_id} မတွေ့ပါ။")
 
 @bot.message_handler(commands=['Error'])
 def handle_error(message):
-    if message.chat.id != REAL_BOOST_GROUP_ID:
+    print(f"[DEBUG] message.text: {repr(message.text)}")
+    print(f"[DEBUG] chat.id: {message.chat.id}, REAL_BOOST_GROUP_ID: {REAL_BOOST_GROUP_ID}")
+
+    if str(message.chat.id) != str(REAL_BOOST_GROUP_ID):
+        bot.reply_to(message, "⚠️ ဒီ command ကို သတ်မှတ်ထားတဲ့ Group ထဲမှာပဲ သုံးလို့ရပါတယ်။")
         return
+
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
-        bot.reply_to(message, "Usage: /Error <order_id> <reason>")
+        bot.reply_to(message, "🔧 သုံးပုံ မှားနေပါတယ်။\n\nမှန်ကန်သော Format:\n/Error <order_id> <အကြောင်းအရင်း>\nဥပမာ: /Error 123 လိပ်စာ မှားနေပါတယ်")
         return
 
     try:
-        order_id = int(parts[1])  # integer ထဲပြောင်း
+        order_id = int(parts[1].strip())
     except ValueError:
-        bot.reply_to(message, "❌ Order ID မှားနေပါတယ်။")
+        bot.reply_to(message, "❌ Order ID မှားနေပါတယ်။ Number ဖြစ်ရပါမယ်။")
         return
 
-    reason = parts[2]
+    reason = parts[2].strip()
 
-    # Supabase မှာ Status: Error + Reason Update
-    result = supabase.table("orders") \
-        .update({"status": "Error", "reason": reason}) \
-        .eq("id", order_id) \
-        .execute()
+    result = supabase.table("orders").update({
+        "status": "Error",
+        "reason": reason
+    }).eq("id", order_id).execute()
+
+    print(f"[DEBUG] Supabase update result: {result}")
 
     if result.data:
-        bot.reply_to(message, f"❌ Order {order_id} ကို Error အဖြစ်သတ်မှတ်ပြီးပါပြီ။")
+        bot.reply_to(message, f"❌ Order {order_id} ကို Error အဖြစ် သတ်မှတ်ပြီးပါပြီ။")
     else:
         bot.reply_to(message, f"⚠️ Order ID {order_id} မတွေ့ပါ။")
 
@@ -573,6 +592,7 @@ if __name__ == '__main__':
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
