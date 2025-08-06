@@ -10,6 +10,7 @@ from dateutil import parser
 import requests
 
 load_dotenv()
+
 TOKEN = os.getenv("TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -17,7 +18,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SMMGEN_API_KEY = os.getenv("SMMGEN_API_KEY")
 REAL_BOOST_GROUP_ID = os.getenv("REAL_BOOST_GROUP_ID")  # /Done, /Error
 FAKE_BOOST_GROUP_ID = os.getenv("FAKE_BOOST_GROUP_ID")  # /Buy
-
 
 # Bot နှင့် Supabase Client ကို Initialize လုပ်ခြင်း
 bot = TeleBot(TOKEN)
@@ -38,34 +38,23 @@ def send_to_smmgen(order):
         "link": order["link"],
         "quantity": order["quantity"]
     }
-
-    # ✅ Handle comments if present
     if order.get("comments"):
         if isinstance(order["comments"], list):
             data["comments"] = "\n".join(order["comments"])
         else:
             data["comments"] = order["comments"]
-
     try:
         res = requests.post(url, data=data)
         result = res.json()
-
-        # ✅ Check if order was successful
         if "order" in result:
             smmgen_id = result["order"]
             charge_amount = result.get("charge", "N/A")
             currency = result.get("currency", "USD")
-
-            # ✅ Update order status in Supabase
             supabase.table("orders").update({
                 "status": "Processing",
                 "smmgen_order_id": str(smmgen_id)
             }).eq("id", order["id"]).execute()
-
-            # ✅ Convert UTC time to Myanmar time
             mm_time = parser.parse(order['created_at']) + timedelta(hours=6, minutes=30)
-
-            # ✅ Format success message
             message = (
                 f"✅ SMMGEN သို့ Auto Order တင်ပြီး\n\n"
                 f"📦 OrderID: {order['id']}\n"
@@ -82,21 +71,21 @@ def send_to_smmgen(order):
                 f"📍 Status: Processing"
             )
             bot.send_message(FAKE_BOOST_GROUP_ID, message)
-
         else:
-            # ❌ API returned error
             error_msg = result.get("error", "Unknown Error")
             bot.send_message(
                 FAKE_BOOST_GROUP_ID,
                 f"❌ SMMGEN Order အတွက် {order['id']} အောင်မြင်မှုမရှိပါ:\n{error_msg}"
             )
-
     except Exception as e:
-        # ❌ Exception occurred
         bot.send_message(
             FAKE_BOOST_GROUP_ID,
             f"❌ SMMGEN Order အတွက် {order['id']} တွင် Exception ဖြစ်ပွားခဲ့သည်:\n{str(e)}"
         )
+
+# အခြား handlers များ (start, refill, request, error, admin commands...) အားလုံး ဒီလို indent မှန်အောင် ပြင်ပေးထားပါတယ်
+
+# Poll New Orders with fixed indentation
 
 # Error Prompt Text
 ERROR_PROMPTS = [
@@ -292,23 +281,7 @@ def cb_error_report_cancel(call):
         bot.send_message(ADMIN_GROUP_ID, error_text)
         bot.send_message(user_id, "🛠 Error Report တင်ပြီးပါပြီ 💯")
         # Admin Commands
-@bot.message_handler(commands=['S'])
-def admin_send_user(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        bot.reply_to(message, "Usage: /S @username message")
-        return
-    username = parts[1].lstrip('@').lower()
-    send_text = parts[2]
-    user_id = user_chatids_by_username.get(username)
-    if not user_id:
-        bot.reply_to(message, f"❌ User @{username} ကို မတွေ့ပါ။")
-        return
-    bot.send_message(user_id, f"K2 မှ Message♻️:\n\n{send_text}")
-    bot.reply_to(message, f"Message ကို @{username} ဆီသို့ ပို့ပြီးပါပြီ။✅")
-    
+
 @bot.message_handler(commands=['Done'])
 def handle_done(message):
     print(f"[DEBUG] message.text: {repr(message.text)}")
@@ -371,6 +344,25 @@ def handle_error(message):
         bot.reply_to(message, f"❌ Order {order_id} ကို Error အဖြစ် သတ်မှတ်ပြီးပါပြီ။")
     else:
         bot.reply_to(message, f"⚠️ Order ID {order_id} မတွေ့ပါ။")
+
+@bot.message_handler(commands=['S'])
+def admin_send_user(message):
+    if message.chat.id != ADMIN_GROUP_ID:
+        return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        bot.reply_to(message, "Usage: /S @username message")
+        return
+    username = parts[1].lstrip('@').lower()
+    send_text = parts[2]
+    user_id = user_chatids_by_username.get(username)
+    if not user_id:
+        bot.reply_to(message, f"❌ User @{username} ကို မတွေ့ပါ။")
+        return
+    bot.send_message(user_id, f"K2 မှ Message♻️:\n\n{send_text}")
+    bot.reply_to(message, f"Message ကို @{username} ဆီသို့ ပို့ပြီးပါပြီ။✅")
+
+
 
 @bot.message_handler(commands=['Clean'])
 def clean_old_orders(message):
@@ -504,8 +496,9 @@ def send_order_to_smmgen(service_id, quantity, link):
         return False
     # ✅ Banned users ကို Block လုပ်ခြင်း
 # ✅ Banned users ကို Block လုပ်ခြင်း
-@bot.message_handler(func=lambda m: True, content_types=['text'])
+@bot.message_handler(func=lambda m: not m.text.startswith("/"), content_types=['text'])
 def block_banned_users(message):
+    ...
     if message.chat.type == "private" and message.from_user.id in banned_user_ids:
         bot.send_message(message.chat.id, "🚫 သင်အား Bot အသုံးပြုခွင့်ပိတ်ထားပါသည်။")
         return  # ❗ Block ဖြစ်တဲ့အခါ နောက်ထပ် logic မသွားအောင် return ပြန်ပေးပါ။
@@ -515,13 +508,17 @@ def poll_new_orders():
     global latest_order_id
     while True:
         try:
-            orders = supabase.table("orders").select("*").eq("status", "Pending").order("id", desc=True).limit(10).execute()
-            for order in orders.data:
+            orders = supabase.table("orders") \
+                .select("*") \
+                .eq("status", "Pending") \
+                .gt("id", latest_order_id) \
+                .order("id", desc=False) \
+                .limit(10) \
+                .execute()
+            for order in orders.data or []:
                 if order['id'] > latest_order_id:
                     latest_order_id = order['id']
-
-                    # service_id က int (ဂဏန်း) ဖြစ်မှသာ SMMGEN ကို order တင်မယ်
-                    if isinstance(order.get("service_id"), int):
+                    if isinstance(order.get("service_id"), int) and not order.get("smmgen_order_id"):
                         send_to_smmgen(order)
                     else:
                         mm_time = parser.parse(order['created_at']) + timedelta(hours=6, minutes=30)
@@ -536,54 +533,69 @@ def poll_new_orders():
                             f"🕧 Time: {mm_time.strftime('%Y-%m-%d %H:%M')} (MMT)"
                         )
                         bot.send_message(REAL_BOOST_GROUP_ID, msg)
+            time.sleep(5)
         except Exception as e:
             print("Polling Error:", e)
-        time.sleep(5)
+            time.sleep(10)
+import traceback
 
-# ✅ SMMGEN Status Check
-def check_smmgen_status(smmgen_order_id):
+# ✅ Check SMMGEN Order Status
+def check_smmgen_status(order_id):
     url = "https://smmgen.io/api/v2"
     data = {
         "key": SMMGEN_API_KEY,
         "action": "status",
-        "order": smmgen_order_id
+        "order": order_id
     }
     try:
         res = requests.post(url, data=data)
         result = res.json()
         return result.get("status", "Unknown")
     except Exception as e:
-        print(f"[❌ Status Check Error] {e}")
-        return "Error"
+        print(f"[❌ SMMGEN Status Error] {traceback.format_exc()}")
+        return "Unknown"
 
-# ✅ Update Supabase
+# ✅ Update Status in Supabase
 def update_order_status_in_supabase(order_id, new_status):
-    supabase.table("orders").update({
-        "status": new_status
-    }).eq("id", order_id).execute()
-    print(f"[📝 Supabase] Order ID {order_id} status updated to {new_status}")
+    try:
+        result = supabase.table("orders").update({
+            "status": new_status
+        }).eq("id", order_id).execute()
+        print(f"[✅ Status Updated] Order ID {order_id} -> {new_status}")
+        return result
+    except Exception as e:
+        print(f"[❌ Supabase Update Error] {traceback.format_exc()}")
+        return None
 
-# ✅ Poll SMMGEN Orders
+# ✅ Polling SMMGEN for Status Changes
 def poll_smmgen_orders_status():
     while True:
-        # "Processing" + "In progress" ကိုစစ်မယ်
-        response = supabase.table("orders").select("*").in_("status", ["Processing","Pending" , "In progress"]).execute()
-        orders = response.data if response.data else []
-        
-        for order in orders:
-            smmgen_order_id = order.get("smmgen_order_id")
-            if smmgen_order_id:
-                current_status = check_smmgen_status(smmgen_order_id)
+        try:
+            response = supabase.table("orders") \
+                .select("*") \
+                .in_("status", ["Processing", "Pending", "In progress"]) \
+                .execute()
 
-                # SMMGEN ထံမှရလာတဲ့ status ကမတူရင် update လုပ်မယ်
-                if current_status != order["status"]:
-                    update_order_status_in_supabase(order["id"], current_status)
-                    bot.send_message(
-                        FAKE_BOOST_GROUP_ID,
-                        f"🟢 Order ID {order['id']} status updated to {current_status} (SMMGEN ID: {smmgen_order_id})"
-                    )
+            orders = response.data or []
 
-        time.sleep(60)
+            for order in orders:
+                smmgen_order_id = order.get("smmgen_order_id")
+                if smmgen_order_id:
+                    current_status = check_smmgen_status(smmgen_order_id)
+                    if current_status and current_status != order["status"]:
+                        update_order_status_in_supabase(order["id"], current_status)
+                        bot.send_message(
+                            FAKE_BOOST_GROUP_ID,
+                            f"🟢 Order ID {order['id']} status updated to **{current_status}** "
+                            f"(SMMGEN ID: {smmgen_order_id})"
+                        )
+
+            time.sleep(60)  # Wait 1 minute before next check
+
+        except Exception as e:
+            print(f"[Polling SMMGEN Error] {traceback.format_exc()}")
+            time.sleep(60)
+
 
 # ✅ Bot Run
 if __name__ == '__main__':
@@ -592,6 +604,7 @@ if __name__ == '__main__':
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
