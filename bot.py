@@ -581,9 +581,8 @@ def poll_smmgen_orders_status():
         try:
             response = supabase.table("orders") \
                 .select("*") \
-                .in_("status", ["Unknown","Processing", "Pending", "In progress"]) \
+                .in_("status", ["Unknown", "Processing", "Pending", "In progress"]) \
                 .execute()
-
             orders = response.data or []
 
             for order in orders:
@@ -594,16 +593,13 @@ def poll_smmgen_orders_status():
                         update_order_status_in_supabase(order["id"], current_status)
                         bot.send_message(
                             FAKE_BOOST_GROUP_ID,
-                            f"🟢 Order ID {order['id']} status updated to **{current_status}** "
+                            f"🟢 Order ID {order['id']} status updated to {current_status} "
                             f"(SMMGEN ID: {smmgen_order_id})"
                         )
-
-            time.sleep(60)  # Wait 1 minute before next check
-
+            time.sleep(60)
         except Exception as e:
             print(f"[Polling SMMGEN Error] {traceback.format_exc()}")
             time.sleep(60)
-
 
 # ✅ Bot Run
 if __name__ == '__main__':
@@ -612,6 +608,7 @@ if __name__ == '__main__':
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
