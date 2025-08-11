@@ -573,7 +573,7 @@ def poll_smmgen_orders_status():
         try:
             response = supabase.table("orders") \
                 .select("*") \
-                .in_("status", [["Unknown","Processing", "Pending", "In progress"]) \
+                .in_("status", ["Unknown","Processing", "Pending", "In progress"]) \
                 .execute()
 
             orders = response.data or []
@@ -604,6 +604,7 @@ if __name__ == '__main__':
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
