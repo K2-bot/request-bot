@@ -8,7 +8,7 @@ from telebot import TeleBot, types
 from supabase import create_client
 from dateutil import parser
 import requests
-
+import traceback
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
@@ -501,9 +501,33 @@ def block_banned_users(message):
     ...
     if message.chat.type == "private" and message.from_user.id in banned_user_ids:
         bot.send_message(message.chat.id, "🚫 သင်အား Bot အသုံးပြုခွင့်ပိတ်ထားပါသည်။")
-        return  # ❗ Block ဖြစ်တဲ့အခါ နောက်ထပ် logic မသွားအောင် return ပြန်ပေးပါ။
+        return  # ❗ Block ဖြစ်တဲ့အခါ နောက်ထပ် logic မသွားအောင် return ပြန်ပေးပါ
 
-# ✅ New Orders ကို Poll လုပ်ခြင်း
+# == Send Order to SMMGEN ==
+def send_to_smmgen(order):
+    url = "https://smmgen.io/api/v2"
+    data = {
+        "key": SMMGEN_API_KEY,
+        "action": "add",
+        "service": order["service_id"],
+        "link": order["link"],
+        "quantity": order["quantity"]
+    }
+    try:
+        res = requests.post(url, data=data, timeout=15)
+        res.raise_for_status()
+        result = res.json()
+        print(f"[✅ Sent to SMMGEN] Order {order['id']}: {result}")
+        # Save smmgen_order_id to Supabase if returned
+        if "order" in result:
+            supabase.table("orders").update({
+                "smmgen_order_id": result["order"]
+            }).eq("id", order["id"]).execute()
+    except Exception:
+        print(f"[❌ SMMGEN Send Error] {traceback.format_exc()}")
+
+
+# == Poll New Orders ==
 def poll_new_orders():
     global latest_order_id
     while True:
@@ -515,6 +539,7 @@ def poll_new_orders():
                 .order("id", desc=False) \
                 .limit(10) \
                 .execute()
+
             for order in orders.data or []:
                 if order['id'] > latest_order_id:
                     latest_order_id = order['id']
@@ -537,33 +562,45 @@ def poll_new_orders():
         except Exception as e:
             print("Polling Error:", e)
             time.sleep(10)
-import traceback
 
-def check_smmgen_status(order_id):
+
+# == Check SMMGEN Status (Retry + Debug) ==
+def check_smmgen_status(order_id, retries=3, delay=2):
     url = "https://smmgen.io/api/v2"
     data = {
         "key": SMMGEN_API_KEY,
         "action": "status",
         "order": order_id
     }
-    try:
-        res = requests.post(url, data=data, timeout=10)
-        print(f"[DEBUG] SMMGEN Status response text for order {order_id}:", repr(res.text))
-        res.raise_for_status()  # HTTP error ဖြစ်ရင် exception ထုတ်မယ်
-        if not res.text.strip():
-            print(f"[❌ Empty response] Order {order_id}")
-            return "Unknown"
-        result = res.json()
-        return result.get("status", "Unknown")
-    except requests.exceptions.RequestException as req_err:
-        print(f"[❌ SMMGEN Request Error] Order {order_id}: {req_err}")
-    except ValueError:
-        print(f"[❌ SMMGEN JSON Decode Error] Order {order_id}: Response not JSON: {repr(res.text)}")
-    except Exception as e:
-        print(f"[❌ SMMGEN Status Error] {traceback.format_exc()}")
+    for attempt in range(retries):
+        try:
+            res = requests.post(url, data=data, timeout=15)
+            print(f"[DEBUG] SMMGEN Status response text for order {order_id}:", repr(res.text))
+            res.raise_for_status()
+
+            if not res.text.strip():
+                print(f"[❌ Empty response] Order {order_id}")
+                continue
+
+            result = res.json()
+            status = result.get("status", "Unknown")
+
+            if status and status.lower() != "unknown":
+                return status
+
+        except requests.exceptions.RequestException as req_err:
+            print(f"[⚠️ Retry {attempt+1}/{retries}] Request error for {order_id}: {req_err}")
+        except ValueError:
+            print(f"[⚠️ Retry {attempt+1}/{retries}] JSON decode error for {order_id}: {repr(res.text)}")
+        except Exception:
+            print(f"[⚠️ Retry {attempt+1}/{retries}] Unexpected error: {traceback.format_exc()}")
+
+        time.sleep(delay)
+
     return "Unknown"
 
-# ✅ Update Status in Supabase
+
+# == Update Status in Supabase ==
 def update_order_status_in_supabase(order_id, new_status):
     try:
         result = supabase.table("orders").update({
@@ -571,11 +608,12 @@ def update_order_status_in_supabase(order_id, new_status):
         }).eq("id", order_id).execute()
         print(f"[✅ Status Updated] Order ID {order_id} -> {new_status}")
         return result
-    except Exception as e:
+    except Exception:
         print(f"[❌ Supabase Update Error] {traceback.format_exc()}")
         return None
 
-# ✅ Polling SMMGEN for Status Changes
+
+# == Polling SMMGEN for Status Changes ==
 def poll_smmgen_orders_status():
     while True:
         try:
@@ -583,26 +621,32 @@ def poll_smmgen_orders_status():
                 .select("*") \
                 .in_("status", ["Unknown", "Processing", "Pending", "In progress"]) \
                 .execute()
+
             orders = response.data or []
 
             for order in orders:
                 smmgen_order_id = order.get("smmgen_order_id")
                 if smmgen_order_id:
                     current_status = check_smmgen_status(smmgen_order_id)
-                    if current_status and current_status != order["status"]:
+
+                    # Unknown ကို skip
+                    if current_status != "Unknown" and current_status != order["status"]:
                         update_order_status_in_supabase(order["id"], current_status)
                         bot.send_message(
                             FAKE_BOOST_GROUP_ID,
                             f"🟢 Order ID {order['id']} status updated to {current_status} "
                             f"(SMMGEN ID: {smmgen_order_id})"
                         )
+
             time.sleep(60)
-        except Exception as e:
+
+        except Exception:
             print(f"[Polling SMMGEN Error] {traceback.format_exc()}")
             time.sleep(60)
 
-# ✅ Bot Run
-if __name__ == '__main__':
+
+# == Bot Run ==
+if __name__ == "__main__":
     keep_alive()
     threading.Thread(target=poll_new_orders, daemon=True).start()
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
