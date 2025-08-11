@@ -539,7 +539,6 @@ def poll_new_orders():
             time.sleep(10)
 import traceback
 
-# ✅ Check SMMGEN Order Status
 def check_smmgen_status(order_id):
     url = "https://smmgen.io/api/v2"
     data = {
@@ -548,12 +547,21 @@ def check_smmgen_status(order_id):
         "order": order_id
     }
     try:
-        res = requests.post(url, data=data)
+        res = requests.post(url, data=data, timeout=10)
+        print(f"[DEBUG] SMMGEN Status response text for order {order_id}:", repr(res.text))
+        res.raise_for_status()  # HTTP error ဖြစ်ရင် exception ထုတ်မယ်
+        if not res.text.strip():
+            print(f"[❌ Empty response] Order {order_id}")
+            return "Unknown"
         result = res.json()
         return result.get("status", "Unknown")
+    except requests.exceptions.RequestException as req_err:
+        print(f"[❌ SMMGEN Request Error] Order {order_id}: {req_err}")
+    except ValueError:
+        print(f"[❌ SMMGEN JSON Decode Error] Order {order_id}: Response not JSON: {repr(res.text)}")
     except Exception as e:
         print(f"[❌ SMMGEN Status Error] {traceback.format_exc()}")
-        return "Unknown"
+    return "Unknown"
 
 # ✅ Update Status in Supabase
 def update_order_status_in_supabase(order_id, new_status):
@@ -604,6 +612,7 @@ if __name__ == '__main__':
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
