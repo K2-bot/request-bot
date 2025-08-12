@@ -30,7 +30,7 @@ latest_order_id = 0
 banned_user_ids = set()
 
 def send_to_smmgen(order):
-    url = "https://smmgen.io/api/v2"
+    url = "https://smmgen.com/api/v2"
     data = {
         "key": SMMGEN_API_KEY,
         "action": "add",
@@ -441,7 +441,7 @@ def handle_refill(message):
         bot.reply_to(message, f"❌ Failed to submit refill request for SMM Order ID {smm_order_id}.")
 
 def send_refill_to_smmgen(smm_order_id):
-    url = "https://smmgen.io/api/v2"
+    url = "https://smmgen.com/api/v2"
     data = {
         "key": SMMGEN_API_KEY,
         "action": "refill",
@@ -479,7 +479,7 @@ def handle_buy(message):
         bot.reply_to(message, f"❌ Failed to submit order for Service ID {service_id}.")
 
 def send_order_to_smmgen(service_id, quantity, link):
-    url = "https://smmgen.io/api/v2"
+    url = "https://smmgen.com/api/v2"
     data = {
         "key": SMMGEN_API_KEY,
         "action": "add",
@@ -505,7 +505,7 @@ def block_banned_users(message):
 
 # == Send Order to SMMGEN ==
 def send_to_smmgen(order):
-    url = "https://smmgen.io/api/v2"
+    url = "https://smmgen.com/api/v2"
     data = {
         "key": SMMGEN_API_KEY,
         "action": "add",
@@ -566,7 +566,7 @@ def poll_new_orders():
 
 # == Check SMMGEN Status (Retry + Debug) ==
 def check_smmgen_status(order_id, retries=3, delay=2):
-    url = "https://smmgen.io/api/v2"
+    url = "https://smmgen.com/api/v2"
     data = {
         "key": SMMGEN_API_KEY,
         "action": "status",
@@ -652,6 +652,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
