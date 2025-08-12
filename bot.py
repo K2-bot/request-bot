@@ -29,59 +29,6 @@ user_chatids_by_username = {}
 latest_order_id = 0
 banned_user_ids = set()
 
-def send_to_smmgen(order):
-    url = "https://smmgen.com/api/v2"
-    data = {
-        "key": SMMGEN_API_KEY,
-        "action": "add",
-        "service": order["service_id"],
-        "link": order["link"],
-        "quantity": order["quantity"]
-    }
-    if order.get("comments"):
-        if isinstance(order["comments"], list):
-            data["comments"] = "\n".join(order["comments"])
-        else:
-            data["comments"] = order["comments"]
-    try:
-        res = requests.post(url, data=data)
-        result = res.json()
-        if "order" in result:
-            smmgen_id = result["order"]
-            charge_amount = result.get("charge", "N/A")
-            currency = result.get("currency", "USD")
-            supabase.table("orders").update({
-                "status": "Processing",
-                "smmgen_order_id": str(smmgen_id)
-            }).eq("id", order["id"]).execute()
-            mm_time = parser.parse(order['created_at']) + timedelta(hours=6, minutes=30)
-            message = (
-                f"✅ SMMGEN သို့ Auto Order တင်ပြီး\n\n"
-                f"📦 OrderID: {order['id']}\n"
-                f"🧾 SMMGEN Service ID: {order['service_id']}\n"
-                f"😂 SMMGEN Order ID: {smmgen_id}\n"
-                f"👤 Email: {order['email']}\n"
-                f"🛒 Service: {order['service']}\n"
-                f"🔢 Quantity: {order['quantity']}\n"
-                f"🔗 Link: {order['link']}\n"
-                f"💰 Amount: {order['amount']} Ks\n"
-                f"💸 SMMGEN Cost: {charge_amount} {currency}\n"
-                f"🕐 Time: {mm_time.strftime('%Y-%m-%d %H:%M')} (MMT)\n"
-                f"📌 Source: {order.get('source', 'Unknown')}\n"
-                f"📍 Status: Processing"
-            )
-            bot.send_message(FAKE_BOOST_GROUP_ID, message)
-        else:
-            error_msg = result.get("error", "Unknown Error")
-            bot.send_message(
-                FAKE_BOOST_GROUP_ID,
-                f"❌ SMMGEN Order အတွက် {order['id']} အောင်မြင်မှုမရှိပါ:\n{error_msg}"
-            )
-    except Exception as e:
-        bot.send_message(
-            FAKE_BOOST_GROUP_ID,
-            f"❌ SMMGEN Order အတွက် {order['id']} တွင် Exception ဖြစ်ပွားခဲ့သည်:\n{str(e)}"
-        )
 
 # အခြား handlers များ (start, refill, request, error, admin commands...) အားလုံး ဒီလို indent မှန်အောင် ပြင်ပေးထားပါတယ်
 
@@ -513,20 +460,58 @@ def send_to_smmgen(order):
         "link": order["link"],
         "quantity": order["quantity"]
     }
+    if order.get("comments"):
+        if isinstance(order["comments"], list):
+            data["comments"] = "\n".join(order["comments"])
+        else:
+            data["comments"] = order["comments"]
+
     try:
         res = requests.post(url, data=data, timeout=15)
         res.raise_for_status()
         result = res.json()
-        print(f"[✅ Sent to SMMGEN] Order {order['id']}: {result}")
-        # Save smmgen_order_id to Supabase if returned
+
         if "order" in result:
+            smmgen_id = result["order"]
+            charge_amount = result.get("charge", "N/A")
+            currency = result.get("currency", "USD")
+
             supabase.table("orders").update({
-                "smmgen_order_id": result["order"]
+                "status": "Processing",
+                "smmgen_order_id": str(smmgen_id)
             }).eq("id", order["id"]).execute()
+
+            mm_time = parser.parse(order['created_at']) + timedelta(hours=6, minutes=30)
+            message = (
+                f"✅ SMMGEN သို့ Auto Order တင်ပြီး\n\n"
+                f"📦 OrderID: {order['id']}\n"
+                f"🧾 SMMGEN Service ID: {order['service_id']}\n"
+                f"😂 SMMGEN Order ID: {smmgen_id}\n"
+                f"👤 Email: {order['email']}\n"
+                f"🛒 Service: {order['service']}\n"
+                f"🔢 Quantity: {order['quantity']}\n"
+                f"🔗 Link: {order['link']}\n"
+                f"💰 Amount: {order['amount']} Ks\n"
+                f"💸 SMMGEN Cost: {charge_amount} {currency}\n"
+                f"🕐 Time: {mm_time.strftime('%Y-%m-%d %H:%M')} (MMT)\n"
+                f"📌 Source: {order.get('source', 'Unknown')}\n"
+                f"📍 Status: Processing"
+            )
+            bot.send_message(FAKE_BOOST_GROUP_ID, message)
+
+        else:
+            error_msg = result.get("error", "Unknown Error")
+            bot.send_message(
+                FAKE_BOOST_GROUP_ID,
+                f"❌ SMMGEN Order အတွက် {order['id']} အောင်မြင်မှုမရှိပါ:\n{error_msg}"
+            )
+
     except Exception:
-        print(f"[❌ SMMGEN Send Error] {traceback.format_exc()}")
-
-
+        bot.send_message(
+            FAKE_BOOST_GROUP_ID,
+            f"❌ SMMGEN Order အတွက် {order['id']} တွင် Exception ဖြစ်ပွားခဲ့သည်:\n{traceback.format_exc()}"
+        )
+        
 # == Poll New Orders ==
 def poll_new_orders():
     global latest_order_id
@@ -652,6 +637,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
