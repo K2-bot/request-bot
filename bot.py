@@ -518,7 +518,7 @@ def send_to_smmgen(order):
                 extra_quantity = max(1, int(main_quantity * 0.1))
 
             elif main_service == 9343:  # Like → View (×10)
-                extra_service = 14391
+                extra_service = 14961
                 extra_quantity = main_quantity * 10
 
             # 📌 Place Extra Order if needed
@@ -700,6 +700,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
