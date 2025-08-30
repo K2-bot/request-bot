@@ -423,14 +423,13 @@ def send_auto_order(order, smmgen_id):
             f"🔢 Quantity: {order.get('quantity',0)}\n"
             f"🔗 Link: {order.get('link','N/A')}\n"
             f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
-            f"💸 Charge: {order.get('Charge',0)} $\n"
+            f"💸 Charge: {order.get('charge',0)} $\n"
             f"❓ Status: {order.get('status','Pending')}\n"
             f"⚡️ Start Count: {order.get('start_count',0)}\n"
             f"⏳ Remain: {order.get('remain',0)}"
         )
         bot.send_message(FAKE_BOOST_GROUP_ID, status_text)
 
-        # Delete initial message
         try:
             bot.delete_message(chat_id=msg.chat.id, message_id=msg.message_id)
         except Exception as e:
@@ -461,7 +460,6 @@ def send_to_smmgen(order):
         if "order" in result:
             smmgen_id = result["order"]
 
-            # Update DB
             supabase.table("orders").update({
                 "status": "Processing",
                 "smmgen_order_id": str(smmgen_id)
@@ -518,7 +516,6 @@ def handle_buy(message):
     try:
         service_id, quantity, link = int(parts[1]), int(parts[2]), parts[3]
 
-        # Insert into DB first
         new_order = {
             "service_id": service_id,
             "quantity": quantity,
@@ -531,7 +528,6 @@ def handle_buy(message):
 
         bot.reply_to(message, f"📦 OrderID {order['id']} created. Submitting to SMMGEN...")
 
-        # Process order
         send_to_smmgen(order)
 
     except Exception as e:
@@ -558,14 +554,13 @@ def poll_new_orders():
                 .execute()
 
             new_orders = response.data or []
-            max_id = latest_order_id  # track highest id seen
+            max_id = latest_order_id
 
             for order in new_orders:
                 order_id = order['id']
                 if order_id > max_id:
                     max_id = order_id
 
-                # ✅ SMMGEN auto order
                 if isinstance(order.get("service_id"), int) and not order.get("smmgen_order_id"):
                     send_to_smmgen(order)
                 else:
@@ -581,17 +576,12 @@ def poll_new_orders():
                         f"🕧 Time: {mm_time.strftime('%Y-%m-%d %H:%M')} (MMT)"
                     )
 
-                    # ✅ Add comments if present
                     if order.get("comments"):
-                        if isinstance(order["comments"], list):
-                            comments_text = "\n".join(order["comments"])
-                        else:
-                            comments_text = str(order["comments"])
+                        comments_text = "\n".join(order["comments"]) if isinstance(order["comments"], list) else str(order["comments"])
                         msg += f"\n💬 Comments: {comments_text}"
 
                     bot.send_message(REAL_BOOST_GROUP_ID, msg)
 
-            # ✅ update latest_order_id after batch
             if max_id > latest_order_id:
                 latest_order_id = max_id
 
@@ -603,52 +593,48 @@ def poll_new_orders():
             time.sleep(10)
 
 # === Check SMMGEN Status ===
-def check_smmgen_status(order_id, retries=3, delay=2):
-    url = "https://smmgen.com/api/v2"
-    data = {"key": SMMGEN_API_KEY, "action": "status", "order": order_id}
-    for attempt in range(retries):
-        try:
-            res = requests.post(url, data=data, timeout=15)
-            res.raise_for_status()
-            if not res.text.strip():
-                continue
-            result = res.json()
-            status = result.get("status", "Unknown")
-            if status and status.lower() != "unknown":
-                return status
-        except Exception:
-            time.sleep(delay)
-    return "Unknown"
-
-# === Update Order Status in Supabase & Notify ===
-def update_order_status_in_supabase(order_id, new_status):
+def check_smmgen_status(order):
     try:
-        result = supabase.table("orders").update({"status": new_status}).eq("id", order_id).execute()
-        print(f"[✅ Status Updated] Order ID {order_id} -> {new_status}")
-        # Fetch order for details
-        order = supabase.table("orders").select("*").eq("id", order_id).single().execute().data
-        if order:
-            status_text = (
-                f"✅ Status ပြောင်းလဲပါပြီ\n\n"
-                f"📦 OrderID: {order.get('id','N/A')}\n"
-                f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
-                f"🌐 Supplier Order ID: {order.get('smmgen_order_id','N/A')}\n"
-                f"👤 Email: {order.get('email','N/A')}\n"
-                f"🛒 Service: {order.get('service','N/A')}\n"
-                f"🔢 Quantity: {order.get('quantity',0)}\n"
-                f"🔗 Link: {order.get('link','N/A')}\n"
-                f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
-                f"💸 Charge: {order.get('Charge',0)} $\n"
-                f"❓ Status: {new_status}\n"
-                f"⚡️ Start Count: {order.get('start_count',0)}\n"
-                f"⏳ Remain: {order.get('remain',0)}"
-            )
-            bot.send_message(FAKE_BOOST_GROUP_ID, status_text)
+        smmgen_id = order.get("smmgen_order_id")
+        if not smmgen_id:
+            print(f"[WARN] No SMMGEN ID for order {order['id']}, skipping.")
+            return
 
-        return result
-    except Exception:
-        print(f"[❌ Supabase Update Error] {traceback.format_exc()}")
-        return None
+        res = requests.post(
+            "https://smmgen.com/api/v2",
+            data={"key": SMMGEN_API_KEY, "action": "status", "order": smmgen_id},
+            timeout=15
+        )
+        result = res.json()
+        print(f"[DEBUG] Status response for Order {order['id']}: {result}")
+
+        supabase.table("orders").update({
+            "start_count": result.get("start_count"),
+            "remain": result.get("remains"),
+            "charge": result.get("charge"),
+            "status": result.get("status", order.get("status", "Pending"))
+        }).eq("id", order["id"]).execute()
+
+        msg = (
+            f"📦 OrderID: {order['id']}\n"
+            f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
+            f"🌐 Supplier Order ID: {smmgen_id}\n"
+            f"👤 Email: {order.get('email','N/A')}\n"
+            f"🛒 Service: {order.get('service','N/A')}\n"
+            f"🔢 Quantity: {order.get('quantity','N/A')}\n"
+            f"🔗 Link: {order.get('link','N/A')}\n"
+            f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
+            f"💸 Charge: {result.get('charge','0')} $\n"
+            f"❓ Status: {result.get('status','N/A')}\n"
+            f"⚡️ Start Count: {result.get('start_count','-')}\n"
+            f"⏳ Remain: {result.get('remains','-')}"
+        )
+        bot.send_message(REAL_BOOST_GROUP_ID, msg)
+
+    except Exception as e:
+        print(f"[❌ check_smmgen_status Error] {e}")
+        traceback.print_exc()
+        bot.send_message(REAL_BOOST_GROUP_ID, f"❌ Error checking SMMGEN status for Order {order.get('id')}\n{e}")
 
 # === Poll SMMGEN Orders Status ===
 def poll_smmgen_orders_status():
@@ -658,9 +644,7 @@ def poll_smmgen_orders_status():
             for order in orders:
                 smmgen_order_id = order.get("smmgen_order_id")
                 if smmgen_order_id:
-                    current_status = check_smmgen_status(smmgen_order_id)
-                    if current_status != "Unknown" and current_status != order["status"]:
-                        update_order_status_in_supabase(order["id"], current_status)
+                    check_smmgen_status(order)
             time.sleep(60)
         except Exception:
             print(f"[Polling SMMGEN Error] {traceback.format_exc()}")
@@ -674,17 +658,4 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
-
-
-
-
-
-
-
-
-
-
-
-
-
 
