@@ -414,7 +414,7 @@ def send_auto_order(order, smmgen_id):
         )
 
         status_text = (
-            f"✅ Status ပြောင်းလဲပါပြီ\n\n"
+            f"✅ Order တင်ပြီးပါပြီ\n\n"
             f"📦 OrderID: {order.get('id','N/A')}\n"
             f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
             f"🌐 Supplier Order ID: {smmgen_id}\n"
@@ -473,15 +473,17 @@ def send_to_smmgen(order):
                 extra_service, extra_quantity = 9343, max(1, int(main_quantity * 0.1))
             elif main_service == 9343:  # Like → View
                 extra_service, extra_quantity = 14961, main_quantity * 10
-
-            if extra_service:
-                extra_res = requests.post("https://smmgen.com/api/v2", data={
-                    "key": SMMGEN_API_KEY,
-                    "action": "add",
-                    "service": extra_service,
-                    "link": order["link"],
-                    "quantity": extra_quantity
-                }, timeout=15).json()
+                if extra_service:extra_res = requests.post(
+                    "https://smmgen.com/api/v2",
+                    data={
+                        "key": SMMGEN_API_KEY,
+                        "action": "add",
+                        "service": extra_service,
+                        "link": order["link"],
+                        "quantity": extra_quantity
+                    },
+                    timeout=15
+                ).json()
 
                 if "order" in extra_res:
                     bot.send_message(
@@ -489,7 +491,7 @@ def send_to_smmgen(order):
                         f"📎 Extra Order တင်ပြီးပါပြီ\n"
                         f"➡️ Main OrderID: {order['id']}\n"
                         f"🧾 Service ID: {extra_service}\n"
-                        f"😂 Extra SMMGEN Order ID: {extra_res['order']}\n"
+                        f"🌐 Extra Supplier Order ID: {extra_res['order']}\n"
                         f"🔢 Quantity: {extra_quantity}\n"
                         f"🔗 Link: {order['link']}\n"
                         f"📌 For: {order.get('service','N/A')} ({main_quantity})"
@@ -498,6 +500,7 @@ def send_to_smmgen(order):
                     bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Extra Order for {order['id']} Failed:\n{extra_res.get('error','Unknown Error')}")
         else:
             bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Order {order['id']} Failed:\n{result.get('error','Unknown Error')}")
+
     except Exception:
         bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Order {order['id']} Exception:\n{traceback.format_exc()}")
 
@@ -515,7 +518,6 @@ def handle_buy(message):
 
     try:
         service_id, quantity, link = int(parts[1]), int(parts[2]), parts[3]
-
         new_order = {
             "service_id": service_id,
             "quantity": quantity,
@@ -527,9 +529,7 @@ def handle_buy(message):
         order = result.data[0]
 
         bot.reply_to(message, f"📦 OrderID {order['id']} created. Submitting to SMMGEN...")
-
         send_to_smmgen(order)
-
     except Exception as e:
         bot.reply_to(message, f"❌ Error: {e}")
 
@@ -552,7 +552,6 @@ def poll_new_orders():
                 .order("id") \
                 .limit(20) \
                 .execute()
-
             new_orders = response.data or []
             max_id = latest_order_id
 
@@ -568,31 +567,27 @@ def poll_new_orders():
                     msg = (
                         f"📦 OrderID: {order['id']}\n"
                         f"👤 Email: {order['email']}\n"
-                        f"🛒 Service: {order['service']}\n"
-                        f"🔴 Quantity: {order['quantity']}\n"
+                        f"🛒 Service: {order['service']}\n"f"🔴 Quantity: {order['quantity']}\n"
                         f"📆 Duration: {order.get('duration', 'N/A')} ရက်\n"
                         f"💰 Amount: {order['amount']} Ks\n"
                         f"🔗 Link: {order['link']}\n"
                         f"🕧 Time: {mm_time.strftime('%Y-%m-%d %H:%M')} (MMT)"
                     )
-
                     if order.get("comments"):
                         comments_text = "\n".join(order["comments"]) if isinstance(order["comments"], list) else str(order["comments"])
                         msg += f"\n💬 Comments: {comments_text}"
-
                     bot.send_message(REAL_BOOST_GROUP_ID, msg)
 
             if max_id > latest_order_id:
                 latest_order_id = max_id
 
             time.sleep(5)
-
         except Exception as e:
             print("Polling Error:", e)
             traceback.print_exc()
             time.sleep(10)
 
-# === Check SMMGEN Status ===
+# === Check SMMGEN Status with Update Only on Change ===
 def check_smmgen_status(order):
     try:
         smmgen_id = order.get("smmgen_order_id")
@@ -606,35 +601,34 @@ def check_smmgen_status(order):
             timeout=15
         )
         result = res.json()
-        print(f"[DEBUG] Status response for Order {order['id']}: {result}")
+        current_status = order.get("status", "Pending")
+        smm_status = result.get("status", current_status)
 
-        supabase.table("orders").update({
-            "start_count": result.get("start_count"),
-            "remain": result.get("remains"),
-            "charge": result.get("charge"),
-            "status": result.get("status", order.get("status", "Pending"))
-        }).eq("id", order["id"]).execute()
+        # ✅ Only update & send message if status changed
+        if smm_status != current_status:
+            supabase.table("orders").update({
+                "start_count": result.get("start_count"),
+                "remain": result.get("remains"),
+                "charge": result.get("charge"),
+                "status": smm_status
+            }).eq("id", order["id"]).execute()
 
-        msg = (
-            f"📦 OrderID: {order['id']}\n"
-            f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
-            f"🌐 Supplier Order ID: {smmgen_id}\n"
-            f"👤 Email: {order.get('email','N/A')}\n"
-            f"🛒 Service: {order.get('service','N/A')}\n"
-            f"🔢 Quantity: {order.get('quantity','N/A')}\n"
-            f"🔗 Link: {order.get('link','N/A')}\n"
-            f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
-            f"💸 Charge: {result.get('charge','0')} $\n"
-            f"❓ Status: {result.get('status','N/A')}\n"
-            f"⚡️ Start Count: {result.get('start_count','-')}\n"
-            f"⏳ Remain: {result.get('remains','-')}"
-        )
-        bot.send_message(REAL_BOOST_GROUP_ID, msg)
+            msg = (
+                f"📦 OrderID: {order['id']}\n"
+                f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
+                f"🌐 Supplier Order ID: {smmgen_id}\n"
+                f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
+                f"💸 Charge: {result.get('charge','0')} $\n"
+                f"❓ Status: {smm_status}\n"
+                f"⚡️ Start Count: {result.get('start_count','-')}\n"
+                f"⏳ Remain: {result.get('remains','-')}"
+            )
+            bot.send_message(FAKE_BOOST_GROUP_ID, msg)
 
     except Exception as e:
         print(f"[❌ check_smmgen_status Error] {e}")
         traceback.print_exc()
-        bot.send_message(REAL_BOOST_GROUP_ID, f"❌ Error checking SMMGEN status for Order {order.get('id')}\n{e}")
+        bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Error checking SMMGEN status for Order {order.get('id')}\n{e}")
 
 # === Poll SMMGEN Orders Status ===
 def poll_smmgen_orders_status():
