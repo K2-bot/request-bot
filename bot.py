@@ -606,14 +606,12 @@ def check_smmgen_status(order):
 
         # ✅ Only update & send message if status changed
         if smm_status != current_status:
-            supabase.table("orders").update({
-                "start_count": result.get("start_count"),
-                "remain": result.get("remains"),
-                "charge": result.get("charge"),
-                "status": smm_status
-            }).eq("id", order["id"]).execute()
-
-            msg = (
+    supabase.table("orders").update({
+        "start_count": int(result.get("start_count") or 0),
+        "remain": int(result.get("remains") or 0),
+        "charge": float(result.get("charge") or 0),
+        "status": smm_status
+    }).eq("id", order["id"]).execute()if            msg = (
                 f"📦 OrderID: {order['id']}\n"
                 f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
                 f"🌐 Supplier Order ID: {smmgen_id}\n"
@@ -652,4 +650,5 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
