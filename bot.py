@@ -9,6 +9,8 @@ from supabase import create_client
 from dateutil import parser
 import requests
 import traceback
+import re
+
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
@@ -733,6 +735,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
