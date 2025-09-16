@@ -367,81 +367,79 @@ def handle_unban_user(message):
     else:
         bot.reply_to(message, f"ℹ️ @{username} ကို Ban မထားပါ။")
 
-if (strpos($text, "/add") === 0) {
-    $parts = explode(" ", $text, 5);
+@bot.message_handler(commands=['add'])
+def add_service(message):
+    # Usage: /add <ServiceID> <Type> <AverageTime> <Note>
+    parts = message.text.strip().split(" ", 4)
+    if len(parts) < 5:
+        bot.reply_to(message, "Usage: /add <ServiceID> <Type> <AverageTime> <Note>")
+        return
 
-    if (count($parts) < 5) {
-        sendMessage($chat_id, "Usage: /add <ServiceID> <Type> <AverageTime> <Note>");
-        exit;
-    }
+    service_id = parts[1].strip()
+    type_ = parts[2].strip()
+    average_time = parts[3].strip()
+    note = parts[4].strip()
 
-    $serviceId   = trim($parts[1]);
-    $type        = trim($parts[2]);
-    $averageTime = trim($parts[3]); // string text
-    $note        = trim($parts[4]); // goes to both Note-MM & Note-ENG
+    # ✅ Fetch services from SMMGen API
+    smm_api_key = os.getenv("SMMGEN_API_KEY")
+    try:
+        response = requests.post(
+            "https://smmgen.com/api/v2",
+            data={"key": smm_api_key, "action": "services"},
+            timeout=15
+        )
+        services = response.json()
+    except Exception as e:
+        bot.reply_to(message, f"❌ Failed to fetch services: {e}")
+        return
 
-    // Fetch service info from SMMGen
-    $api = new Api(getenv("SMMGEN_API_KEY"));
-    $services = $api->services();
+    # ✅ Find matching service
+    service = next((s for s in services if str(s.get("service")) == service_id), None)
+    if not service:
+        bot.reply_to(message, "❌ Service ID not found in SMMGen API.")
+        return
 
-    $service = null;
-    foreach ($services as $s) {
-        if ($s->service == $serviceId) {
-            $service = $s;
-            break;
-        }
-    }
+    buy_price = service.get("rate", 0)
+    sell_price = buy_price  # Sell = Buy
 
-    if (!$service) {
-        sendMessage($chat_id, " Service ID not found in SMMGen API.");
-        exit;
-    }
+    # ✅ Insert into Supabase services table
+    try:
+        supabase.table("services").insert({
+            "service_id": service.get("service"),
+            "type": type_,
+            "category": service.get("category", ""),
+            "service_name": service.get("name", ""),
+            "min": service.get("min", 0),
+            "max": service.get("max", 0),
+            "average_time": average_time,
+            "buy_price": buy_price,
+            "sell_price": sell_price,
+            "note_mm": note,
+            "note_eng": note,
+            "total_sold_qty": 0
+        }).execute()
+    except Exception as e:
+        bot.reply_to(message, f"❌ Failed to insert service: {e}")
+        return
 
-    // Prepare values
-    $buyPrice  = $service->rate;
-    $sellPrice = $buyPrice; //  Sell = Buy
+    # ✅ Build message for group
+    msg = (
+        f"📢 <b>Service Added!</b>\n\n"
+        f"<b>Service ID:</b> {service.get('service')}\n"
+        f"<b>Type:</b> {type_}\n"
+        f"<b>Category:</b> {service.get('category','')}\n"
+        f"<b>Service Name:</b> {service.get('name','')}\n"
+        f"<b>Min:</b> {service.get('min',0)}\n"
+        f"<b>Max:</b> {service.get('max',0)}\n"
+        f"<b>Average Time:</b> {average_time}\n"
+        f"<b>Buy Price:</b> {buy_price}\n"
+        f"<b>Sell Price:</b> {sell_price}\n"
+        f"<b>Note:</b> {note}"
+    )
 
-    // Insert into DB
-    $stmt = $pdo->prepare("
-        INSERT INTO services 
-        (service_id, type, category, service_name, min, max, average_time, buy_price, sell_price, note_mm, note_eng, total_sold_qty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ");
-
-    $stmt->execute([
-        $service->service,
-        $type,
-        $service->category ?? '',
-        $service->name ?? '',
-        $service->min ?? 0,
-        $service->max ?? 0,
-        $averageTime,    // text field
-        $buyPrice,
-        $sellPrice,
-        $note, // Note-MM
-        $note, // Note-ENG
-        0
-    ]);
-
-    // Build message
-    $msg = " <b>Service Added!</b>\n\n".
-           "<b>Service ID:</b> {$service->service}\n".
-           "<b>Type:</b> {$type}\n".
-           "<b>Category:</b> {$service->category}\n".
-           "<b>Service Name:</b> {$service->name}\n".
-           "<b>Min:</b> {$service->min}\n".
-           "<b>Max:</b> {$service->max}\n".
-           "<b>Average Time:</b> {$averageTime}\n".
-           "<b>Buy Price:</b> {$buyPrice}\n".
-           "<b>Sell Price:</b> {$sellPrice}\n".
-           "<b>Note:</b> {$note}";
-
-    //  Send to Group from .env
-    sendMessage(getenv("GROUP_ID"), $msg);
-
-    // Also reply to user who added
-    sendMessage($chat_id, " Service added successfully and posted to Group!");
-}
+    group_id = os.getenv("GROUP_ID")
+    bot.send_message(group_id, msg, parse_mode="HTML")
+    bot.reply_to(message, "✅ Service added successfully and posted to Group!")
 
         # Refill Command
 @bot.message_handler(commands=['Refill'])
@@ -681,24 +679,25 @@ def check_smmgen_status(order):
         smm_status = result.get("status", current_status)
 
         # ✅ Only update & send message if status changed
-        if smm_status != current_status:
+     if smm_status != current_status:
     supabase.table("orders").update({
         "start_count": int(result.get("start_count") or 0),
         "remain": int(result.get("remains") or 0),
         "charge": float(result.get("charge") or 0),
         "status": smm_status
-    }).eq("id", order["id"]).execute()if            msg = (
-                f"📦 OrderID: {order['id']}\n"
-                f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
-                f"🌐 Supplier Order ID: {smmgen_id}\n"
-                f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
-                f"💸 Charge: {result.get('charge','0')} $\n"
-                f"❓ Status: {smm_status}\n"
-                f"⚡️ Start Count: {result.get('start_count','-')}\n"
-                f"⏳ Remain: {result.get('remains','-')}"
-            )
-            bot.send_message(FAKE_BOOST_GROUP_ID, msg)
+    }).eq("id", order["id"]).execute()
 
+    msg = (
+        f"📦 OrderID: {order['id']}\n"
+        f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
+        f"🌐 Supplier Order ID: {smmgen_id}\n"
+        f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
+        f"💸 Charge: {result.get('charge','0')} $\n"
+        f"❓ Status: {smm_status}\n"
+        f"⚡️ Start Count: {result.get('start_count','-')}\n"
+        f"⏳ Remain: {result.get('remains','-')}"
+    )
+    bot.send_message(FAKE_BOOST_GROUP_ID, msg)
     except Exception as e:
         print(f"[❌ check_smmgen_status Error] {e}")
         traceback.print_exc()
@@ -726,6 +725,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
