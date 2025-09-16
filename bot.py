@@ -374,66 +374,62 @@ def handle_unban_user(message):
 
 @bot.message_handler(commands=['add'])
 def add_service(message):
-    """
-    Usage:
-    /add "ServiceID" "Type" "AverageTime" "Note (multi-line allowed)"
-    """
-    # ✅ Match quoted arguments, including multi-line note
-    m = re.match(
-        r'^/add\s+"([^"]+)"\s+"([^"]+)"\s+"([^"]+)"\s+"([\s\S]+)"$',
-        message.text.strip()
-    )
-    if not m:
-        bot.reply_to(
-            message,
-            "❌ Usage: /add \"ServiceID\" \"Type\" \"AverageTime\" \"Note\" (multi-line allowed)"
-        )
+    # Usage: /add <ServiceID> <Type> <AverageTime> <Note>
+    parts = message.text.strip().split(" ", 4)
+    if len(parts) < 5:
+        bot.reply_to(message, "Usage: /add <ServiceID> <Type> <AverageTime> <Note>")
         return
 
-    service_id, type_, average_time, note = m.groups()
+    service_id = parts[1].strip()
+    type_ = parts[2].strip()
+    average_time = parts[3].strip()
+    note = parts[4].strip()
 
-    # ✅ Fetch services from SMMGen API
+    # Fetch services from SMMGen API
+    smm_api_key = os.getenv("SMMGEN_API_KEY")
     try:
-        resp = requests.post(
+        response = requests.post(
             "https://smmgen.com/api/v2",
-            data={"key": SMMGEN_API_KEY, "action": "services"},
+            data={"key": smm_api_key, "action": "services"},
             timeout=15
         )
-        services = resp.json()
+        services = response.json()
     except Exception as e:
         bot.reply_to(message, f"❌ Failed to fetch services: {e}")
         return
 
-    # ✅ Find matching service
+    # Find matching service
     service = next((s for s in services if str(s.get("service")) == service_id), None)
     if not service:
         bot.reply_to(message, "❌ Service ID not found in SMMGen API.")
         return
 
     buy_price = service.get("rate", 0)
-    sell_price = buy_price  # or adjust if you add markup
+    sell_price = buy_price  # Sell = Buy
+    use_type = service.get("type", "Default")  # Use SMMGen API type
 
-    # ✅ Insert into Supabase
+    # Insert into Supabase services table
     try:
         supabase.table("services").insert({
             "service_id": service.get("service"),
             "type": type_,
             "category": service.get("category", ""),
             "service_name": service.get("name", ""),
-            "min": service.get("min", 0),
-            "max": service.get("max", 0),
+            "min": int(service.get("min", 0)),
+            "max": int(service.get("max", 0)),
             "average_time": average_time,
-            "buy_price": buy_price,
-            "sell_price": sell_price,
+            "buy_price": float(buy_price),
+            "sell_price": float(sell_price),
             "note_mm": note,
             "note_eng": note,
-            "total_sold_qty": 0
+            "total_sold_qty": 0,
+            "use_type": use_type
         }).execute()
     except Exception as e:
         bot.reply_to(message, f"❌ Failed to insert service: {e}")
         return
 
-    # ✅ Build confirmation message
+    # Build message for group
     msg = (
         f"📢 <b>Service Added!</b>\n\n"
         f"<b>Service ID:</b> {service.get('service')}\n"
@@ -445,12 +441,14 @@ def add_service(message):
         f"<b>Average Time:</b> {average_time}\n"
         f"<b>Buy Price:</b> {buy_price}\n"
         f"<b>Sell Price:</b> {sell_price}\n"
-        f"<b>Note:</b>\n{note}"
+        f"<b>Use Type:</b> {use_type}\n"
+        f"<b>Note:</b> {note}"
     )
 
-    bot.send_message(GROUP_ID, msg, parse_mode="HTML")
+    group_id = os.getenv("GROUP_ID")
+    bot.send_message(group_id, msg, parse_mode="HTML")
     bot.reply_to(message, "✅ Service added successfully and posted to Group!")
-
+    
         # Refill Command
 @bot.message_handler(commands=['Refill'])
 def handle_refill(message):
@@ -735,6 +733,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
