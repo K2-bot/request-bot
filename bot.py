@@ -367,6 +367,82 @@ def handle_unban_user(message):
     else:
         bot.reply_to(message, f"ℹ️ @{username} ကို Ban မထားပါ။")
 
+if (strpos($text, "/add") === 0) {
+    $parts = explode(" ", $text, 5);
+
+    if (count($parts) < 5) {
+        sendMessage($chat_id, "Usage: /add <ServiceID> <Type> <AverageTime> <Note>");
+        exit;
+    }
+
+    $serviceId   = trim($parts[1]);
+    $type        = trim($parts[2]);
+    $averageTime = trim($parts[3]); // string text
+    $note        = trim($parts[4]); // goes to both Note-MM & Note-ENG
+
+    // Fetch service info from SMMGen
+    $api = new Api(getenv("SMMGEN_API_KEY"));
+    $services = $api->services();
+
+    $service = null;
+    foreach ($services as $s) {
+        if ($s->service == $serviceId) {
+            $service = $s;
+            break;
+        }
+    }
+
+    if (!$service) {
+        sendMessage($chat_id, " Service ID not found in SMMGen API.");
+        exit;
+    }
+
+    // Prepare values
+    $buyPrice  = $service->rate;
+    $sellPrice = $buyPrice; //  Sell = Buy
+
+    // Insert into DB
+    $stmt = $pdo->prepare("
+        INSERT INTO services 
+        (service_id, type, category, service_name, min, max, average_time, buy_price, sell_price, note_mm, note_eng, total_sold_qty)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ");
+
+    $stmt->execute([
+        $service->service,
+        $type,
+        $service->category ?? '',
+        $service->name ?? '',
+        $service->min ?? 0,
+        $service->max ?? 0,
+        $averageTime,    // text field
+        $buyPrice,
+        $sellPrice,
+        $note, // Note-MM
+        $note, // Note-ENG
+        0
+    ]);
+
+    // Build message
+    $msg = " <b>Service Added!</b>\n\n".
+           "<b>Service ID:</b> {$service->service}\n".
+           "<b>Type:</b> {$type}\n".
+           "<b>Category:</b> {$service->category}\n".
+           "<b>Service Name:</b> {$service->name}\n".
+           "<b>Min:</b> {$service->min}\n".
+           "<b>Max:</b> {$service->max}\n".
+           "<b>Average Time:</b> {$averageTime}\n".
+           "<b>Buy Price:</b> {$buyPrice}\n".
+           "<b>Sell Price:</b> {$sellPrice}\n".
+           "<b>Note:</b> {$note}";
+
+    //  Send to Group from .env
+    sendMessage(getenv("GROUP_ID"), $msg);
+
+    // Also reply to user who added
+    sendMessage($chat_id, " Service added successfully and posted to Group!");
+}
+
         # Refill Command
 @bot.message_handler(commands=['Refill'])
 def handle_refill(message):
@@ -650,5 +726,6 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
