@@ -679,29 +679,29 @@ def check_smmgen_status(order):
         smm_status = result.get("status", current_status)
 
         # ✅ Only update & send message if status changed
-     if smm_status != current_status:
-    supabase.table("orders").update({
-        "start_count": int(result.get("start_count") or 0),
-        "remain": int(result.get("remains") or 0),
-        "charge": float(result.get("charge") or 0),
-        "status": smm_status
-    }).eq("id", order["id"]).execute()
+        if smm_status != current_status:
+            supabase.table("orders").update({
+                "start_count": int(result.get("start_count") or 0),
+                "remain": int(result.get("remains") or 0),
+                "charge": float(result.get("charge") or 0),
+                "status": smm_status
+            }).eq("id", order["id"]).execute()
 
-    msg = (
-        f"📦 OrderID: {order['id']}\n"
-        f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
-        f"🌐 Supplier Order ID: {smmgen_id}\n"
-        f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
-        f"💸 Charge: {result.get('charge','0')} $\n"
-        f"❓ Status: {smm_status}\n"
-        f"⚡️ Start Count: {result.get('start_count','-')}\n"
-        f"⏳ Remain: {result.get('remains','-')}"
-    )
-    bot.send_message(FAKE_BOOST_GROUP_ID, msg)
+            msg = (
+                f"📦 OrderID: {order['id']}\n"
+                f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
+                f"🌐 Supplier Order ID: {smmgen_id}\n"
+                f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
+                f"💸 Charge: {result.get('charge','0')} $\n"
+                f"❓ Status: {smm_status}\n"
+                f"⚡️ Start Count: {result.get('start_count','-')}\n"
+                f"⏳ Remain: {result.get('remains','-')}"
+            )
+            bot.send_message(FAKE_BOOST_GROUP_ID, msg)
+
     except Exception as e:
         print(f"[❌ check_smmgen_status Error] {e}")
         traceback.print_exc()
-        bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Error checking SMMGEN status for Order {order.get('id')}\n{e}")
 
 # === Poll SMMGEN Orders Status ===
 def poll_smmgen_orders_status():
@@ -725,6 +725,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
