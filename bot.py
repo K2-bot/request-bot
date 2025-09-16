@@ -18,6 +18,9 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 SMMGEN_API_KEY = os.getenv("SMMGEN_API_KEY")
 REAL_BOOST_GROUP_ID = os.getenv("REAL_BOOST_GROUP_ID")  # /Done, /Error
 FAKE_BOOST_GROUP_ID = os.getenv("FAKE_BOOST_GROUP_ID")  # /Buy
+GROUP_ID = int(os.getenv("GROUP_ID"))
+
+
 
 # Bot နှင့် Supabase Client ကို Initialize လုပ်ခြင်း
 bot = TeleBot(TOKEN)
@@ -730,6 +733,7 @@ if __name__ == "__main__":
     threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
     print("🤖 K2 Bot is running...")
     bot.infinity_polling()
+
 
 
 
