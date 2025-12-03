@@ -1,744 +1,585 @@
 import os
-import time
+import logging
 import threading
-from keep_alive import keep_alive
-from datetime import datetime, timezone, timedelta
+from flask import Flask
 from dotenv import load_dotenv
-from telebot import TeleBot, types
-from supabase import create_client
-from dateutil import parser
-import requests
-import traceback
-import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ConversationHandler
+from supabase import create_client, Client
 
+# 1. Configuration Setup
 load_dotenv()
-
-TOKEN = os.getenv("TOKEN")
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID"))
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-SMMGEN_API_KEY = os.getenv("SMMGEN_API_KEY")
-REAL_BOOST_GROUP_ID = os.getenv("REAL_BOOST_GROUP_ID")  # /Done, /Error
-FAKE_BOOST_GROUP_ID = os.getenv("FAKE_BOOST_GROUP_ID")  # /Buy
-GROUP_ID = int(os.getenv("GROUP_ID"))
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", 0))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 
+# States for ConversationHandler
+WAITING_EMAIL, WAITING_PASSWORD, WAITING_MASS_ORDER, WAITING_SUPPORT_ID = range(4)
+ORDER_WAITING_LINK, ORDER_WAITING_QTY, ORDER_CONFIRM = range(4, 7)
 
+# Logging Setup
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Bot နှင့် Supabase Client ကို Initialize လုပ်ခြင်း
-bot = TeleBot(TOKEN)
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+# Supabase Setup
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# အသုံးပြုသူ state များ
-user_states = {}
-user_chatids_by_username = {}
-latest_order_id = 0
-banned_user_ids = set()
+# --- FLASK SERVER (For UptimeRobot) ---
+app = Flask(__name__)
 
+@app.route('/')
+def home():
+    return "Bot is alive and running!", 200
 
-# အခြား handlers များ (start, refill, request, error, admin commands...) အားလုံး ဒီလို indent မှန်အောင် ပြင်ပေးထားပါတယ်
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
-# Poll New Orders with fixed indentation
+# --- HELPER FUNCTIONS ---
 
-# Error Prompt Text
-ERROR_PROMPTS = [
-    "1. Order Error လား တစ်ခြား Error လား❓\n\nမည်သည့် Error ဖြစ်ကြောင်း ရေးပါ ✅",
-    "2. မည်သို့ဖြစ်သည်ကိုရေးပါ☑️\n\nဥပမာ ငွေမရောက်သေးတာ စသည်ဖြင့်",
-    "3. @email & Order ID ရေးပါ 💬\nEg. example@gmail.com , Order ID 👀",
-    "4. Error ဖြစ်မဖြစ်သေချာ စစ်ဆေးပါ💣\n\nသေချာပါက 'Error Report ✅' ကိုနှိပ်ပါ။"
-]
+def get_user(tg_id):
+    """Telegram ID ဖြင့် User ရှာခြင်း"""
+    res = supabase.table('users').select("*").eq('telegram_id', tg_id).execute()
+    return res.data[0] if res.data else None
 
-def reset_state(user_id):
-    user_states.pop(user_id, None)
-    # /start Command
-@bot.message_handler(commands=['start'])
-def cmd_start(message):
-    if message.chat.type != "private":
-        return
-    chat_id = message.chat.id
-    username = message.from_user.username or message.from_user.first_name
-    if username:
-        user_chatids_by_username[username.lower()] = chat_id
-    if chat_id in banned_user_ids:
-        bot.send_message(chat_id, "🚫 သင်သည် Bot ကိုအသုံးပြုခွင့်ပိတ်ထားပါသည်။")
-        return
-    text = (
-        "🎉 Hello! K2 Bot မှကြိုဆိုပါတယ်။\n\n"
-        "ကျနော်တို့ရဲ့ K2Boost ဆိုတဲ့ Telegram Channel လေးကို Join ပေးကြပါအုံး။✅\n\n"
-        "[ https://t.me/K2_Boost ]"
+def calculate_cost(quantity, service_data):
+    """ဈေးနှုန်းတွက်ချက်ခြင်း Formula"""
+    per_qty = int(service_data.get('per_quantity', 1000))
+    if per_qty == 0: per_qty = 1000
+    sell_price = float(service_data.get('sell_price', 0))
+    return (quantity / per_qty) * sell_price
+
+def format_service_message(service):
+    """Channel Post အတွက် စာသားဒီဇိုင်း"""
+    name = service.get('service_name', 'Unknown')
+    price = service.get('sell_price', '0')
+    min_qty = service.get('min', 0)
+    max_qty = service.get('max', 0)
+    display_id = service.get('id') # Local ID (8, 9, etc.)
+
+    raw_note = service.get('note_mm') or service.get('note_eng') or ""
+    description = raw_note.replace("Description\n", "").strip()
+
+    return (
+        f"🔥 *{name}*\n\n"
+        f"🆔 *ID:* `{display_id}`\n"
+        f"💵 *Price:* ${price} (per {service.get('per_quantity', 1000)})\n"
+        f"📉 *Min:* {min_qty} | 📈 *Max:* {max_qty}\n\n"
+        f"📝 *Details:*\n`{description}`"
     )
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        types.InlineKeyboardButton("Request တောင်းဆိုခြင်း 🙏", callback_data="request"),
-        types.InlineKeyboardButton("Error ဖြစ်ခြင်းကိုဖြေရှင်းရန် ‼️", callback_data="error"),
-        types.InlineKeyboardButton("Refill ဖြည့်ရန်♻️ ", callback_data="refill"),
-        types.InlineKeyboardButton("အသုံးပြုနည်းလမ်းညွန် ✅", url="https://t.me/K2_Boost")
-    )
-    bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+    # --- AUTHENTICATION FLOW (Login/Register) ---
 
-# Refill Flow with 2 Steps
-@bot.callback_query_handler(func=lambda c: c.data == "refill")
-def cb_refill_start(call):
-    user_id = call.from_user.id
-    user_states[user_id] = {"mode": "refill", "step": 1, "data": {}}
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Refill Cancel ❌", callback_data="refill_cancel"))
-    msg = (
-        "📧 Refill ပြုလုပ်ရန်အတွက် Email ကို ရိုက်ထည့်ပါ။\n\n"
-        "Website ထဲက Email ကို Copy ယူပြီး Paste လုပ်ပါ။✅\n\n"
-        "ဥပမာ 👇\nexample@gmail.com\nexample@Gmail.com"
-    )
-    bot.send_message(user_id, msg, reply_markup=markup, parse_mode="Markdown")
-    bot.answer_callback_query(call.id)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    db_user = get_user(user.id)
+    args = context.args
 
-@bot.callback_query_handler(func=lambda c: c.data == "refill_cancel")
-def cb_refill_cancel(call):
-    user_id = call.from_user.id
-    if user_states.get(user_id, {}).get("mode") == "refill":
-        reset_state(user_id)
-        bot.send_message(user_id, "✅ Refill Cancel ပြီးပါပြီ။")
-    else:
-        bot.send_message(user_id, "⚠️ Refill Cancel မရနိုင်ပါ။")
-    bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
-    bot.answer_callback_query(call.id)
-
-@bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get("mode") == "refill")
-def handle_refill_steps(message):
-    user_id = message.from_user.id
-    text = message.text.strip()
-    state = user_states.get(user_id)
-    if not state:
-        return
-
-    step = state.get("step")
-    if step == 1:
-        # Email Validation
-        if "@" not in text or "." not in text:
-            bot.send_message(user_id, "❌ Email မမှန်ပါ။ ပြန်စစ်ပေးပါ။")
-            return
-        state["data"]["email"] = text
-        state["step"] = 2
-        bot.send_message(
-            user_id,
-            "🔁 Refill ပြုလုပ်ချင်သည့် Order ID နှင့် ဖြစ်သည့်အကြောင်းအရင်းကိုရေးပေးပါ။\n\n"
-            "ဥပမာ 👉 OrderID- 1234 , TikTok Like ကျသွားပါတယ် ♻️",
-            parse_mode="Markdown"
+    # 1. Login မဝင်ရသေးလျင်
+    if not db_user:
+        keyboard = [
+            [InlineKeyboardButton("🔐 Login (Website အကောင့်ဖြင့်)", callback_data="login_flow")],
+            [InlineKeyboardButton("📝 Register (အကောင့်ဖွင့်ရန်)", url="https://k2boostweb.com/createaccount")]
+        ]
+        await update.message.reply_text(
+            f"မင်္ဂလာပါ {user.first_name}! 👋\n"
+            "K2 Boost Bot မှ ကြိုဆိုပါသည်။ ဝန်ဆောင်မှုရယူရန် Login ဝင်ပါ။",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-    elif step == 2:
-        state["data"]["info"] = text
-        email = state["data"]["email"]
-        info = state["data"]["info"]
-        username = message.from_user.username or message.from_user.first_name
-        reset_state(user_id)
+        return
 
-        refill_msg = (
-            f"🔁 Refill Request\n\n"
-            f"👤 @{username} (ID: {user_id})\n"
-            f"📧 Email: {email}\n"
-            f"📝 Info: {info}\n\n"
+    # 2. Deep Link (Channel က Order နှိပ်လာလျင်)
+    if args and args[0].startswith("order_"):
+        local_id = args[0].split("_")[1]
+        await update.message.reply_text(
+            f"✅ Service ID: `{local_id}` ကို ရွေးချယ်ထားပါသည်။\n\n"
+            f"အော်ဒါတင်ရန် နှိပ်ပါ 👉 /neworder {local_id}",
+            parse_mode='Markdown'
         )
-        bot.send_message(ADMIN_GROUP_ID, refill_msg)
-        bot.send_message(user_id, "✅ Refill Request တောင်းဆိုပြီးပါပြီ။\n  ")
-        bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
-        # Request Flow
-@bot.callback_query_handler(func=lambda c: c.data == "request")
-def cb_request(call):
-    user_id = call.from_user.id
-    user_states[user_id] = {"mode": "request"}
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("Request Cancel ✅", callback_data="request_cancel"))
-    bot.send_message(
-        user_id,
-        "K2 ဆီကိုတောင်းဆိုချင်သည့် စာ ၊ အကြံပြုချက်\nရေးထားပေးနိုင်ပါတယ် 🙏",
-        reply_markup=markup
-    )
-    bot.answer_callback_query(call.id)
-
-@bot.callback_query_handler(func=lambda c: c.data == "request_cancel")
-def cb_request_cancel(call):
-    user_id = call.from_user.id
-    if user_states.get(user_id, {}).get("mode") == "request":
-        reset_state(user_id)
-        bot.send_message(user_id, "✅ Request Cancel ပြီးပါပြီ။")
     else:
-        bot.send_message(user_id, "⚠️ Request Cancel မရနိုင်ပါ။")
-    bot.answer_callback_query(call.id)
-    bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
-
-@bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get("mode") == "request")
-def handle_request_message(message):
-    user_id = message.from_user.id
-    text = message.text.strip()
-    username = message.from_user.username or message.from_user.first_name
-    forward = f"Title Request🙏 \n\n @{username} (ID: {user_id}):\n\n{text}"
-    bot.send_message(ADMIN_GROUP_ID, forward)
-    bot.send_message(user_id, "Request တောင်းဆိုခြင်း လက်ခံရရှိပါပြီ ✅")
-    reset_state(user_id)
-    bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
-
-# Error Flow
-@bot.callback_query_handler(func=lambda c: c.data == "error")
-def cb_error_start(call):
-    user_id = call.from_user.id
-    user_states[user_id] = {"mode": "error", "step": 1, "data": {}}
-    bot.send_message(user_id, ERROR_PROMPTS[0])
-    bot.answer_callback_query(call.id)
-
-@bot.message_handler(func=lambda m: user_states.get(m.from_user.id, {}).get("mode") == "error")
-def handle_error_steps(message):
-    user_id = message.from_user.id
-    state = user_states.get(user_id)
-    if not state:
-        return
-    step = state["step"]
-    text = message.text.strip()
-    if step in [1, 2]:
-        state["data"][f"step_{step}"] = text
-        state["step"] += 1
-        bot.send_message(user_id, ERROR_PROMPTS[step])
-    elif step == 3:
-        if "@" not in text:
-            bot.send_message(user_id, "❌ Email ပါအောင်ရိုက်ထည့်ပါ။")
-            return
-        state["data"]["email_order"] = text
-        state["step"] = 4
-        markup = types.InlineKeyboardMarkup()
-        markup.add(
-            types.InlineKeyboardButton("Error Report ✅", callback_data="error_report"),
-            types.InlineKeyboardButton("Error Cancel ❌", callback_data="error_cancel")
+        # Normal Logged In User
+        await update.message.reply_text(
+            f"မင်္ဂလာပါ {db_user.get('email')}! 👋\n\n"
+            "အောက်ပါ Command များကို အသုံးပြုနိုင်ပါသည်:\n"
+            "👉 /services - ဝန်ဆောင်မှုများ ကြည့်ရန်\n"
+            "👉 /neworder <ID> - အော်ဒါတင်ရန်\n"
+            "👉 /help - အကောင့်လက်ကျန်နှင့် အကူအညီ"
         )
-        bot.send_message(user_id, ERROR_PROMPTS[3], reply_markup=markup)
-    else:
-        bot.send_message(user_id, "Button ကိုရွေးချယ်ပါ 🔘")
 
-@bot.callback_query_handler(func=lambda c: c.data in ["error_report", "error_cancel"])
-def cb_error_report_cancel(call):
-    user_id = call.from_user.id
-    if user_id not in user_states:
-        bot.answer_callback_query(call.id, "⚠️ Error Report မရှိပါ။")
-        return
-    if call.data == "error_cancel":
-        reset_state(user_id)
-        bot.send_message(user_id, "⭕️ Error Report မလုပ်တော့ပါဘူး")
-        bot.send_message(user_id, "⚡️အစသို့ပြန်သွားရန် /start ကိုနှိပ်ပါ။")
-    else:
-        data = user_states[user_id]["data"]
-        reset_state(user_id)
-        username = call.from_user.username or call.from_user.first_name
-        error_text = (
-            f"🚨 New Error Report \n\n @{username} (ID: {user_id}):\n\n"
-            f"Step 1: {data.get('step_1','')}\n"
-            f"Step 2: {data.get('step_2','')}\n"
-            f"Step 3: {data.get('email_order','')}\n"
-        )
-        bot.send_message(ADMIN_GROUP_ID, error_text)
-        bot.send_message(user_id, "🛠 Error Report တင်ပြီးပါပြီ 💯")
-        # Admin Commands
-
-@bot.message_handler(commands=['Done'])
-def handle_done(message):
-    print(f"[DEBUG] message.text: {repr(message.text)}")
-    print(f"[DEBUG] chat.id: {message.chat.id}, REAL_BOOST_GROUP_ID: {REAL_BOOST_GROUP_ID}")
-
-    if str(message.chat.id) != str(REAL_BOOST_GROUP_ID):
-        bot.reply_to(message, "⚠️ ဒီ command ကို သတ်မှတ်ထားတဲ့ Group ထဲမှာပဲ သုံးလို့ရပါတယ်။")
-        return
-
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 2:
-        bot.reply_to(message, "🔧 သုံးပုံ မှားနေပါတယ်။\n\nမှန်ကန်သော Format:\n/Done <order_id> [optional_reason]\nဥပမာ: /Done 123 မှန်ပြီ")
-        return
-
-    order_id = parts[1].strip()
-    reason = parts[2].strip() if len(parts) > 2 else "Completed"
-
-    result = supabase.table("orders").update({
-        "status": "Done",
-        "reason": reason
-    }).eq("id", order_id).execute()
-
-    print(f"[DEBUG] Supabase update result: {result}")
-
-    if result.data:
-        bot.reply_to(message, f"✅ Order {order_id} ကို Done အဖြစ် သတ်မှတ်ပြီးပါပြီ။")
-    else:
-        bot.reply_to(message, f"❌ Order ID {order_id} မတွေ့ပါ။")
-
-@bot.message_handler(commands=['Error'])
-def handle_error(message):
-    print(f"[DEBUG] message.text: {repr(message.text)}")
-    print(f"[DEBUG] chat.id: {message.chat.id}, REAL_BOOST_GROUP_ID: {REAL_BOOST_GROUP_ID}")
-
-    if str(message.chat.id) != str(REAL_BOOST_GROUP_ID):
-        bot.reply_to(message, "⚠️ ဒီ command ကို သတ်မှတ်ထားတဲ့ Group ထဲမှာပဲ သုံးလို့ရပါတယ်။")
-        return
-
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        bot.reply_to(message, "🔧 သုံးပုံ မှားနေပါတယ်။\n\nမှန်ကန်သော Format:\n/Error <order_id> <အကြောင်းအရင်း>\nဥပမာ: /Error 123 လိပ်စာ မှားနေပါတယ်")
-        return
-
-    try:
-        order_id = int(parts[1].strip())
-    except ValueError:
-        bot.reply_to(message, "❌ Order ID မှားနေပါတယ်။ Number ဖြစ်ရပါမယ်။")
-        return
-
-    reason = parts[2].strip()
-
-    result = supabase.table("orders").update({
-        "status": "Error",
-        "reason": reason
-    }).eq("id", order_id).execute()
-
-    print(f"[DEBUG] Supabase update result: {result}")
-
-    if result.data:
-        bot.reply_to(message, f"❌ Order {order_id} ကို Error အဖြစ် သတ်မှတ်ပြီးပါပြီ။")
-    else:
-        bot.reply_to(message, f"⚠️ Order ID {order_id} မတွေ့ပါ။")
-
-@bot.message_handler(commands=['S'])
-def admin_send_user(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        bot.reply_to(message, "Usage: /S @username message")
-        return
-    username = parts[1].lstrip('@').lower()
-    send_text = parts[2]
-    user_id = user_chatids_by_username.get(username)
-    if not user_id:
-        bot.reply_to(message, f"❌ User @{username} ကို မတွေ့ပါ။")
-        return
-    bot.send_message(user_id, f"K2 မှ Message♻️:\n\n{send_text}")
-    bot.reply_to(message, f"Message ကို @{username} ဆီသို့ ပို့ပြီးပါပြီ။✅")
-
-
-
-@bot.message_handler(commands=['Clean'])
-def clean_old_orders(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-    parts = message.text.split()
-    if len(parts) != 2 or parts[1] != "3Day":
-        bot.reply_to(message, "Usage: /Clean 3Day")
-        return
-    try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=3)
-        old_orders = supabase.table("orders") \
-            .select("id, created_at") \
-            .lt("created_at", cutoff.isoformat()) \
-            .execute()
-        deleted_ids = []
-        for order in old_orders.data:
-            supabase.table("orders").delete().eq("id", order["id"]).execute()
-            deleted_ids.append(str(order["id"]))
-        if deleted_ids:
-            bot.reply_to(message, f"🗑 Deleted Orders: {', '.join(deleted_ids)}")
-        else:
-            bot.reply_to(message, "ℹ️ မရှိပါ။")
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {str(e)}")
-
-@bot.message_handler(commands=['Ban'])
-def handle_ban_user(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: /Ban @username")
-        return
-    username = parts[1].lstrip('@').lower()
-    user_id = user_chatids_by_username.get(username)
-    if user_id:
-        banned_user_ids.add(user_id)
-        bot.reply_to(message, f"🚫 @{username} ကို Ban လုပ်ပြီးပါပြီ။")
-    else:
-        bot.reply_to(message, f"❌ User @{username} မတွေ့ပါ။")
-@bot.message_handler(commands=['Unban'])
-def handle_unban_user(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        return
-    parts = message.text.split()
-    if len(parts) < 2:
-        bot.reply_to(message, "Usage: /Unban @username")
-        return
-    username = parts[1].lstrip('@').lower()
-    user_id = user_chatids_by_username.get(username)
-    if user_id and user_id in banned_user_ids:
-        banned_user_ids.remove(user_id)
-        bot.reply_to(message, f"✅ @{username} ကို Unban ပြန်လုပ်ပြီးပါပြီ။")
-    else:
-        bot.reply_to(message, f"ℹ️ @{username} ကို Ban မထားပါ။")
-
-@bot.message_handler(commands=['add'])
-def add_service(message):
-    # Usage: /add <ServiceID> <Type> <AverageTime> <Note>
-    parts = message.text.strip().split(" ", 4)
-    if len(parts) < 5:
-        bot.reply_to(message, "Usage: /add <ServiceID> <Type> <AverageTime> <Note>")
-        return
-
-    service_id = parts[1].strip()
-    type_ = parts[2].strip()
-    average_time = parts[3].strip()
-    note = parts[4].strip()
-
-    # Fetch services from SMMGen API
-    smm_api_key = os.getenv("SMMGEN_API_KEY")
-    try:
-        response = requests.post(
-            "https://smmgen.com/api/v2",
-            data={"key": smm_api_key, "action": "services"},
-            timeout=15
-        )
-        services = response.json()
-    except Exception as e:
-        bot.reply_to(message, f"❌ Failed to fetch services: {e}")
-        return
-
-    # Find matching service
-    service = next((s for s in services if str(s.get("service")) == service_id), None)
-    if not service:
-        bot.reply_to(message, "❌ Service ID not found in SMMGen API.")
-        return
-
-    buy_price = service.get("rate", 0)
-    sell_price = buy_price  # Sell = Buy
-    use_type = service.get("type", "Default")  # Use SMMGen API type
-
-    # Insert into Supabase services table
-    try:
-        supabase.table("services").insert({
-            "service_id": service.get("service"),
-            "type": type_,
-            "category": service.get("category", ""),
-            "service_name": service.get("name", ""),
-            "min": int(service.get("min", 0)),
-            "max": int(service.get("max", 0)),
-            "average_time": average_time,
-            "buy_price": float(buy_price),
-            "sell_price": float(sell_price),
-            "note_mm": note,
-            "note_eng": note,
-            "total_sold_qty": 0,
-            "use_type": use_type
-        }).execute()
-    except Exception as e:
-        bot.reply_to(message, f"❌ Failed to insert service: {e}")
-        return
-
-    # Build message for group
-    msg = (
-        f"📢 <b>Service Added!</b>\n\n"
-        f"<b>Service ID:</b> {service.get('service')}\n"
-        f"<b>Type:</b> {type_}\n"
-        f"<b>Category:</b> {service.get('category','')}\n"
-        f"<b>Service Name:</b> {service.get('name','')}\n"
-        f"<b>Min:</b> {service.get('min',0)}\n"
-        f"<b>Max:</b> {service.get('max',0)}\n"
-        f"<b>Average Time:</b> {average_time}\n"
-        f"<b>Buy Price:</b> {buy_price}\n"
-        f"<b>Sell Price:</b> {sell_price}\n"
-        f"<b>Use Type:</b> {use_type}\n"
-        f"<b>Note:</b> {note}"
-    )
-
-    group_id = os.getenv("GROUP_ID")
-    bot.send_message(group_id, msg, parse_mode="HTML")
-    bot.reply_to(message, "✅ Service added successfully and posted to Group!")
+# Login Step 1: Ask Email
+async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-        # Refill Command
-@bot.message_handler(commands=['Refill'])
-def handle_refill(message):
-    if message.chat.id != ADMIN_GROUP_ID:  # Admin Group ID မှာသာ အသုံးပြုနိုင်သည်
-        bot.reply_to(message, "🚫 သင်သည် Refill Command ကို အသုံးပြုရန်ခွင့်မပြုပါ။")
-        return
+    # Database မှာ State 1 (Waiting Email) လို့မှတ်မယ်
+    user_id = update.effective_user.id
+    supabase.table('users').update({'bot_state': 1}).eq('telegram_id', user_id).execute() # If row exists (manual fix needed if no row)
+    
+    # Note: For new users, we assume they might not have a row in 'users' linked to TG yet.
+    # So we handle state via Context here for simplicity in this flow, 
+    # OR we ask them to register first. Since logic says 'Login with Website Account',
+    # we proceed to ask email.
+    
+    await query.edit_message_text("📧 သင့် Website Email ကို ရိုက်ထည့်ပေးပါ:")
+    return WAITING_EMAIL
 
-    parts = message.text.split()
-    if len(parts) != 2:
-        bot.reply_to(message, "Usage: /Refill <smm_order_id>")
-        return
-    smm_order_id = parts[1]
+# Login Step 2: Receive Email & Ask Password
+async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    email = update.message.text.strip().lower()
+    context.user_data['login_email'] = email
+    
+    await update.message.reply_text(
+        "🔑 **Password** ကို ရိုက်ထည့်ပေးပါ:\n"
+        "(လုံခြုံရေးအရ သင်ရိုက်လိုက်သော Password ကို Bot မှ Auto ဖျက်ပေးပါမည်)",
+        parse_mode='Markdown'
+    )
+    return WAITING_PASSWORD
 
-    # SMMGEN API ကို Refill လုပ်ရန် Call
-    refill_response = send_refill_to_smmgen(smm_order_id)
-    if refill_response:
-        bot.reply_to(message, f"✅ Refill request for SMM Order ID {smm_order_id} has been submitted.")
-    else:
-        bot.reply_to(message, f"❌ Failed to submit refill request for SMM Order ID {smm_order_id}.")
-
-def send_refill_to_smmgen(smm_order_id):
-    url = "https://smmgen.com/api/v2"
-    data = {
-        "key": SMMGEN_API_KEY,
-        "action": "refill",
-        "order": smm_order_id
-    }
+# Login Step 3: Verify Password
+async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    password = update.message.text.strip()
+    email = context.user_data.get('login_email')
+    
+    # Auto Delete Password Message
+    try: await update.message.delete()
+    except: pass
+    
+    msg = await update.message.reply_text("🔄 Checking...")
+    
     try:
-        res = requests.post(url, data=data)
-        result = res.json()
-        return result.get("success", False)
-    except Exception as e:
-        print(f"[❌ Refill Error] {e}")
-        return False
-
-# === Send Auto Order Message ===
-def send_auto_order(order, smmgen_id):
-    try:
-        msg = bot.send_message(
-            FAKE_BOOST_GROUP_ID,
-            f"✅ Auto Order တင်ပြီးပါပြီ\n"
-            f"📦 OrderID: {order.get('id','N/A')}\n"
-            f"🛒 Service: {order.get('service','N/A')}\n"
-            f"🔢 Quantity: {order.get('quantity',0)}"
-        )
-
-        status_text = (
-            f"✅ Order တင်ပြီးပါပြီ\n\n"
-            f"📦 OrderID: {order.get('id','N/A')}\n"
-            f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
-            f"🌐 Supplier Order ID: {smmgen_id}\n"
-            f"👤 Email: {order.get('email','N/A')}\n"
-            f"🛒 Service: {order.get('service','N/A')}\n"
-            f"🔢 Quantity: {order.get('quantity',0)}\n"
-            f"🔗 Link: {order.get('link','N/A')}\n"
-            f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
-            f"💸 Charge: {order.get('charge',0)} $\n"
-            f"❓ Status: {order.get('status','Pending')}\n"
-            f"⚡️ Start Count: {order.get('start_count',0)}\n"
-            f"⏳ Remain: {order.get('remain',0)}"
-        )
-        bot.send_message(FAKE_BOOST_GROUP_ID, status_text)
-
-        try:
-            bot.delete_message(chat_id=msg.chat.id, message_id=msg.message_id)
-        except Exception as e:
-            print(f"Cannot delete message: {e}")
-
-    except Exception as e:
-        print(f"Error in send_auto_order: {e}")
-
-# === Send to SMMGEN ===
-def send_to_smmgen(order):
-    try:
-        main_service = order["service_id"]
-        main_quantity = int(order["quantity"])
-        data = {
-            "key": SMMGEN_API_KEY,
-            "action": "add",
-            "service": main_service,
-            "link": order["link"],
-            "quantity": main_quantity
-        }
-
-        if order.get("comments"):
-            data["comments"] = "\n".join(order["comments"]) if isinstance(order["comments"], list) else order["comments"]
-
-        res = requests.post("https://smmgen.com/api/v2", data=data, timeout=15)
-        result = res.json()
-
-        if "order" in result:
-            smmgen_id = result["order"]
-
-            supabase.table("orders").update({
-                "status": "Processing",
-                "smmgen_order_id": str(smmgen_id)
-            }).eq("id", order["id"]).execute()
-
-            send_auto_order(order, smmgen_id)
-
-            # === Extra Order Logic ===
-            extra_service, extra_quantity = None, 0
-            if main_service == 14962:  # View → Like
-                extra_service, extra_quantity = 9343, max(1, int(main_quantity * 0.1))
-            elif main_service == 9343:  # Like → View
-                extra_service, extra_quantity = 14961, main_quantity * 10
-                if extra_service:extra_res = requests.post(
-                    "https://smmgen.com/api/v2",
-                    data={
-                        "key": SMMGEN_API_KEY,
-                        "action": "add",
-                        "service": extra_service,
-                        "link": order["link"],
-                        "quantity": extra_quantity
-                    },
-                    timeout=15
-                ).json()
-
-                if "order" in extra_res:
-                    bot.send_message(
-                        FAKE_BOOST_GROUP_ID,
-                        f"📎 Extra Order တင်ပြီးပါပြီ\n"
-                        f"➡️ Main OrderID: {order['id']}\n"
-                        f"🧾 Service ID: {extra_service}\n"
-                        f"🌐 Extra Supplier Order ID: {extra_res['order']}\n"
-                        f"🔢 Quantity: {extra_quantity}\n"
-                        f"🔗 Link: {order['link']}\n"
-                        f"📌 For: {order.get('service','N/A')} ({main_quantity})"
-                    )
-                else:
-                    bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Extra Order for {order['id']} Failed:\n{extra_res.get('error','Unknown Error')}")
-        else:
-            bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Order {order['id']} Failed:\n{result.get('error','Unknown Error')}")
-
-    except Exception:
-        bot.send_message(FAKE_BOOST_GROUP_ID, f"❌ Order {order['id']} Exception:\n{traceback.format_exc()}")
-
-# === Admin Buy Command ===
-@bot.message_handler(commands=['Buy'])
-def handle_buy(message):
-    if message.chat.id != ADMIN_GROUP_ID:
-        bot.reply_to(message, "🚫 သင်သည် Buy Command ကို အသုံးပြုရန်ခွင့်မပြုပါ။")
-        return
-
-    parts = message.text.split(maxsplit=3)
-    if len(parts) != 4:
-        bot.reply_to(message, "Usage: /Buy <SMMGEN-ServiceID> <Quantity> <Link>")
-        return
-
-    try:
-        service_id, quantity, link = int(parts[1]), int(parts[2]), parts[3]
-        new_order = {
-            "service_id": service_id,
-            "quantity": quantity,
-            "link": link,
-            "status": "Pending",
-            "source": "Manual-Buy"
-        }
-        result = supabase.table("orders").insert(new_order).execute()
-        order = result.data[0]
-
-        bot.reply_to(message, f"📦 OrderID {order['id']} created. Submitting to SMMGEN...")
-        send_to_smmgen(order)
-    except Exception as e:
-        bot.reply_to(message, f"❌ Error: {e}")
-
-# === Block Banned Users ===
-@bot.message_handler(func=lambda m: True, content_types=['text'])
-def block_banned_users(message):
-    if message.chat.type == "private" and message.from_user.id in banned_user_ids:
-        bot.send_message(message.chat.id, "🚫 သင်အား Bot အသုံးပြုခွင့်ပိတ်ထားပါသည်။")
-        return
-
-# === Poll New Orders ===
-def poll_new_orders():
-    global latest_order_id
-    while True:
-        try:
-            response = supabase.table("orders") \
-                .select("*") \
-                .eq("status", "Pending") \
-                .gt("id", latest_order_id) \
-                .order("id") \
-                .limit(20) \
-                .execute()
-            new_orders = response.data or []
-            max_id = latest_order_id
-
-            for order in new_orders:
-                order_id = order['id']
-                if order_id > max_id:
-                    max_id = order_id
-
-                if isinstance(order.get("service_id"), int) and not order.get("smmgen_order_id"):
-                    send_to_smmgen(order)
-                else:
-                    mm_time = parser.parse(order['created_at']) + timedelta(hours=6, minutes=30)
-                    msg = (
-                        f"📦 OrderID: {order['id']}\n"
-                        f"👤 Email: {order['email']}\n"
-                        f"🛒 Service: {order['service']}\n"f"🔴 Quantity: {order['quantity']}\n"
-                        f"📆 Duration: {order.get('duration', 'N/A')} ရက်\n"
-                        f"💰 Amount: {order['amount']} Ks\n"
-                        f"🔗 Link: {order['link']}\n"
-                        f"🕧 Time: {mm_time.strftime('%Y-%m-%d %H:%M')} (MMT)"
-                    )
-                    if order.get("comments"):
-                        comments_text = "\n".join(order["comments"]) if isinstance(order["comments"], list) else str(order["comments"])
-                        msg += f"\n💬 Comments: {comments_text}"
-                    bot.send_message(REAL_BOOST_GROUP_ID, msg)
-
-            if max_id > latest_order_id:
-                latest_order_id = max_id
-
-            time.sleep(5)
-        except Exception as e:
-            print("Polling Error:", e)
-            traceback.print_exc()
-            time.sleep(10)
-
-# === Check SMMGEN Status with Update Only on Change ===
-def check_smmgen_status(order):
-    try:
-        smmgen_id = order.get("smmgen_order_id")
-        if not smmgen_id:
-            print(f"[WARN] No SMMGEN ID for order {order['id']}, skipping.")
-            return
-
-        res = requests.post(
-            "https://smmgen.com/api/v2",
-            data={"key": SMMGEN_API_KEY, "action": "status", "order": smmgen_id},
-            timeout=15
-        )
-        result = res.json()
-        current_status = order.get("status", "Pending")
-        smm_status = result.get("status", current_status)
-
-        # ✅ Only update & send message if status changed
-        if smm_status != current_status:
-            supabase.table("orders").update({
-                "start_count": int(result.get("start_count") or 0),
-                "remain": int(result.get("remains") or 0),
-                "charge": float(result.get("charge") or 0),
-                "status": smm_status
-            }).eq("id", order["id"]).execute()
-
-            msg = (
-                f"📦 OrderID: {order['id']}\n"
-                f"🧾 Supplier Service ID: {order.get('service_id','N/A')}\n"
-                f"🌐 Supplier Order ID: {smmgen_id}\n"
-                f"💰 Paid Amount: {order.get('amount',0)} Ks\n"
-                f"💸 Charge: {result.get('charge','0')} $\n"
-                f"❓ Status: {smm_status}\n"
-                f"⚡️ Start Count: {result.get('start_count','-')}\n"
-                f"⏳ Remain: {result.get('remains','-')}"
+        # Supabase Auth Login
+        session = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        if session.user:
+            # Link Telegram ID to User Row
+            supabase.table('users').update({
+                'telegram_id': update.effective_user.id,
+                'bot_state': 0, # Reset State
+                'temp_data': {} 
+            }).eq('id', session.user.id).execute()
+            
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id, 
+                message_id=msg.message_id, 
+                text=f"✅ **Login Successful!**\nAccount: {email}\n\n/services ကိုနှိပ်၍ စတင်နိုင်ပါပြီ။",
+                parse_mode='Markdown'
             )
-            bot.send_message(FAKE_BOOST_GROUP_ID, msg)
-
+        else:
+            await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="❌ Login Failed.")
+            
     except Exception as e:
-        print(f"[❌ check_smmgen_status Error] {e}")
-        traceback.print_exc()
+        logger.error(f"Login Error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id, 
+            message_id=msg.message_id, 
+            text="❌ Email သို့မဟုတ် Password မှားယွင်းနေပါသည်။\n/start ကိုနှိပ်၍ ပြန်ကြိုးစားပါ။"
+        )
+    
+    context.user_data.clear()
+    return ConversationHandler.END
 
-# === Poll SMMGEN Orders Status ===
-def poll_smmgen_orders_status():
-    while True:
+async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Process Canceled.")
+    return ConversationHandler.END
+
+# --- BASIC USER COMMANDS ---
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db_user = get_user(user_id)
+    if not db_user: return await update.message.reply_text("Login First: /start")
+
+    balance = db_user.get('balance', 0)
+    text = (
+        f"👤 **Account Info**\n📧 Email: `{db_user.get('email')}`\n💰 Balance: **${balance:.4f}**\n\n"
+        "📋 **Commands:**\n"
+        "/services - ဈေးနှုန်းကြည့်ရန်\n"
+        "/neworder <ID> - မှာယူရန်\n"
+        "/massorder - အများကြီးမှာရန်\n"
+        "/history - မှတ်တမ်းကြည့်ရန်\n"
+        "/check <OrderID> - Status စစ်ရန်\n"
+        "/support - အကူအညီတောင်းရန်"
+    )
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Channel Link
+    channel_link = "https://t.me/YourChannelLink" # ပြင်ရန်
+    await update.message.reply_text(
+        f"🛍 **Services & Prices**\n\n"
+        f"ဝန်ဆောင်မှုများကို ဤ Channel တွင် ကြည့်ရှုနိုင်ပါသည်:\n👉 {channel_link}",
+        disable_web_page_preview=True
+    )
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db_user = get_user(user_id)
+    if not db_user: return
+    
+    # Get last 5 orders
+    orders = supabase.table('WebsiteOrders').select("*").eq('email', db_user['email']).order('id', desc=True).limit(5).execute().data
+    
+    if not orders:
+        await update.message.reply_text("မရှိသေးပါ")
+        return
+        
+    msg = "📜 **Recent Orders**\n\n"
+    for o in orders:
+        msg += f"🆔 `{o['id']}` | Svc: {o['service']}\n🔗 {o['link'][:15]}...\n📊 Qty: {o['quantity']} | 💲 ${o['buy_charge']}\nSTATUS: **{o['status']}**\n\n"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args: return await update.message.reply_text("Usage: `/check 123`", parse_mode='Markdown')
+    ids = context.args[0].split(',')
+    msg = ""
+    for oid in ids:
+        res = supabase.table('WebsiteOrders').select("status, start_count, remain").eq('id', oid).execute()
+        if res.data:
+            s = res.data[0]
+            msg += f"🆔 `{oid}`: **{s['status']}** (Start: {s['start_count']})\n"
+        else:
+            msg += f"🆔 `{oid}`: Not Found\n"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+    # --- NEW ORDER SYSTEM (Step-by-Step) ---
+
+async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    db_user = get_user(user_id)
+    if not db_user: return await update.message.reply_text("Login First.")
+
+    # ID ပါမပါ စစ်ဆေးခြင်း
+    if not context.args:
+        await update.message.reply_text("⚠️ Service ID ထည့်ရန် လိုအပ်ပါသည်။\nExample: `/neworder 8`", parse_mode='Markdown')
+        return ConversationHandler.END
+
+    input_id = context.args[0] # Local ID (e.g., 8)
+    
+    # Database တွင် Local ID ဖြင့် ရှာဖွေခြင်း
+    res = supabase.table('services').select("*").eq('id', input_id).execute()
+    if not res.data:
+        await update.message.reply_text("❌ Service ID မှားယွင်းနေပါသည်။")
+        return ConversationHandler.END
+
+    service = res.data[0]
+    context.user_data['order_service'] = service
+    
+    # Type အလိုက် Link တောင်းပုံ ပြောင်းခြင်း
+    prompt = "🔗 **Link** (URL) ကို ထည့်သွင်းပေးပါ:"
+    if service.get('use_type') == 'Telegram username' or 'Stars' in service.get('service_name', ''):
+        prompt = "🔗 **Telegram Username** ကို ထည့်သွင်းပေးပါ (Example: @username):"
+
+    await update.message.reply_text(
+        f"✅ **Selected:** {service.get('service_name')}\n"
+        f"💵 **Price:** ${service.get('sell_price')}\n\n"
+        f"{prompt}", parse_mode='Markdown'
+    )
+    return ORDER_WAITING_LINK
+
+async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    link = update.message.text.strip()
+    context.user_data['order_link'] = link
+    
+    svc = context.user_data['order_service']
+    await update.message.reply_text(f"📊 **Quantity** ထည့်ပါ (Min: {svc['min']} - Max: {svc['max']}):")
+    return ORDER_WAITING_QTY
+
+async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    qty_text = update.message.text.strip()
+    if not qty_text.isdigit():
+        await update.message.reply_text("❌ ဂဏန်းသာ ရိုက်ထည့်ပါ။")
+        return ORDER_WAITING_QTY
+    
+    qty = int(qty_text)
+    svc = context.user_data['order_service']
+    
+    if qty < svc['min'] or qty > svc['max']:
+        await update.message.reply_text(f"❌ Quantity မမှန်ပါ။ {svc['min']} မှ {svc['max']} ကြား ရိုက်ပါ။")
+        return ORDER_WAITING_QTY
+
+    context.user_data['order_qty'] = qty
+    cost = calculate_cost(qty, svc)
+    context.user_data['order_cost'] = cost
+    
+    # Confirm Button
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Confirm", callback_data="confirm_yes"), InlineKeyboardButton("❌ Cancel", callback_data="confirm_no")]
+    ])
+    await update.message.reply_text(
+        f"🧾 **Summary**\n🔗 {context.user_data['order_link']}\n📊 Qty: {qty}\n💵 Cost: **${cost:.4f}**\n\nConfirm?",
+        reply_markup=markup, parse_mode='Markdown'
+    )
+    return ORDER_CONFIRM
+
+async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "confirm_no":
+        await query.edit_message_text("❌ Canceled.")
+        return ConversationHandler.END
+    
+    user_id = update.effective_user.id
+    db_user = get_user(user_id) # Refresh Balance
+    cost = context.user_data['order_cost']
+    
+    if db_user['balance'] < cost:
+        await query.edit_message_text(f"❌ Balance မလောက်ပါ။ Need: ${cost:.4f}")
+        return ConversationHandler.END
+        
+    # Process Order
+    new_bal = float(db_user['balance']) - cost
+    supabase.table('users').update({'balance': new_bal}).eq('telegram_id', user_id).execute()
+    
+    order_data = {
+        "email": db_user['email'],
+        "service": context.user_data['order_service']['service_id'], # Supplier ID for record
+        "link": context.user_data['order_link'],
+        "quantity": context.user_data['order_qty'],
+        "buy_charge": cost,
+        "status": "Pending",
+        "UsedType": "NewOrder"
+    }
+    supabase.table('WebsiteOrders').insert(order_data).execute()
+    await query.edit_message_text(f"✅ **Success!**\nBalance: ${new_bal:.4f}", parse_mode='Markdown')
+    return ConversationHandler.END
+
+# --- MASS ORDER SYSTEM ---
+
+async def mass_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not get_user(update.effective_user.id): return await update.message.reply_text("Login First.")
+    
+    await update.message.reply_text(
+        "🚀 **Mass Order**\nFormat: `Local_ID | Link | Quantity`\n\nExample:\n`8 | https://link1 | 1000`\n`9 | @username | 50`\n\nSend your list now:",
+        parse_mode='Markdown'
+    )
+    return WAITING_MASS_ORDER
+
+async def process_mass_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    lines = update.message.text.strip().split('\n')
+    msg = await update.message.reply_text(f"🔄 Processing {len(lines)} orders...")
+    
+    report = "📊 **Result**\n"
+    success, fail = 0, 0
+    
+    for i, line in enumerate(lines, 1):
         try:
-            orders = supabase.table("orders").select("*").in_("status", ["Unknown","Processing","Pending","In progress"]).execute().data or []
-            for order in orders:
-                smmgen_order_id = order.get("smmgen_order_id")
-                if smmgen_order_id:
-                    check_smmgen_status(order)
-            time.sleep(60)
-        except Exception:
-            print(f"[Polling SMMGEN Error] {traceback.format_exc()}")
-            time.sleep(60)
+            parts = [p.strip() for p in line.split('|')]
+            if len(parts) != 3: raise Exception("Format Error")
+            
+            sid, link, qty = parts[0], parts[1], int(parts[2])
+            
+            # Fetch Service by Local ID
+            res = supabase.table('services').select("*").eq('id', sid).execute()
+            if not res.data: raise Exception("ID Not Found")
+            svc = res.data[0]
+            
+            # Validation
+            allowed = ['Default', 'Promote', 'Telegram username']
+            if svc.get('use_type') not in allowed and 'Stars' not in svc.get('service_name',''):
+                 raise Exception("Type Not Supported")
+                 
+            if qty < svc['min'] or qty > svc['max']: raise Exception("Qty Limit")
+            
+            # Check Link/User
+            if (svc.get('use_type') == 'Telegram username' or 'Stars' in svc.get('service_name','')) and '@' not in link:
+                raise Exception("Need @username")
+            elif svc.get('use_type') in ['Default', 'Promote'] and 'http' not in link:
+                raise Exception("Need URL")
+                
+            cost = calculate_cost(qty, svc)
+            u = get_user(user_id)
+            if u['balance'] < cost: raise Exception("No Balance")
+            
+            # Execute
+            new_bal = float(u['balance']) - cost
+            supabase.table('users').update({'balance': new_bal}).eq('telegram_id', user_id).execute()
+            supabase.table('WebsiteOrders').insert({
+                "email": u['email'], "service": svc['service_id'], "link": link, "quantity": qty,
+                "buy_charge": cost, "status": "Pending", "UsedType": "MassOrder"
+            }).execute()
+            
+            report += f"✅ L{i}: Success (${cost:.4f})\n"
+            success += 1
+            
+        except Exception as e:
+            report += f"❌ L{i}: {e}\n"
+            fail += 1
+            
+    if len(report) > 4000: report = report[:4000]
+    await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text=report)
+    return ConversationHandler.END
 
-# === Bot Run ===
-if __name__ == "__main__":
-    from keep_alive import keep_alive
-    keep_alive()
-    threading.Thread(target=poll_new_orders, daemon=True).start()
-    threading.Thread(target=poll_smmgen_orders_status, daemon=True).start()
-    print("🤖 K2 Bot is running...")
-    bot.infinity_polling()
+# --- SUPPORT SYSTEM ---
 
+async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [[InlineKeyboardButton("Refill", callback_data="sup_Refill"), InlineKeyboardButton("Cancel", callback_data="sup_Cancel")],
+          [InlineKeyboardButton("SpeedUp", callback_data="sup_SpeedUp"), InlineKeyboardButton("Other", callback_data="sup_Other")]]
+    await update.message.reply_text("🛠 **Support**\nSelect Issue:", reply_markup=InlineKeyboardMarkup(kb))
 
+async def support_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['sup_type'] = query.data.split("_")[1]
+    await query.edit_message_text(f"selected: {context.user_data['sup_type']}\nSend Order IDs (e.g. `123, 456`):")
+    return WAITING_SUPPORT_ID
 
+async def process_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = get_user(update.effective_user.id)
+    ids = update.message.text
+    supabase.table('SupportBox').insert({
+        "email": user['email'], "subject": context.user_data['sup_type'],
+        "order_id": ids, "message": "User Request via Bot", "status": "Pending", "UserStatus": "unread"
+    }).execute()
+    await update.message.reply_text("✅ Ticket Created!")
+    return ConversationHandler.END
+    # --- ADMIN COMMANDS ---
 
+async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Admin Group ဟုတ်မဟုတ် စစ်ဆေးခြင်း
+    if update.effective_chat.id != ADMIN_GROUP_ID: return
 
+    # နောက်ဆုံး Service 5 ခုကို ယူမည် (လိုသလို ပြင်နိုင်သည်)
+    services = supabase.table('services').select("*").order('id', desc=True).limit(5).execute().data
+    
+    if not services:
+        await update.message.reply_text("❌ No services found.")
+        return
 
+    bot_username = (await context.bot.get_me()).username
+    await update.message.reply_text("🔄 Posting services to channel...")
 
+    for s in services:
+        try:
+            # Local ID (8) ကိုသုံးပြီး Deep Link ချိတ်မည်
+            local_id = s['id']
+            text = format_service_message(s)
+            
+            deep_link = f"https://t.me/{bot_username}?start=order_{local_id}"
+            keyboard = [[InlineKeyboardButton("🚀 Order Now", url=deep_link)]]
+            
+            # Channel သို့ ပို့ခြင်း
+            sent = await context.bot.send_message(
+                chat_id=CHANNEL_ID,
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            
+            # Message ID ကို Database တွင် ပြန်သိမ်းခြင်း (Sync လုပ်ရန်အတွက်)
+            supabase.table('services').update({'channel_msg_id': sent.message_id}).eq('id', local_id).execute()
+            
+        except Exception as e:
+            logger.error(f"Post Error ID {local_id}: {e}")
 
+    await update.message.reply_text("✅ Done posting.")
 
+async def admin_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not context.args: return await update.message.reply_text("Usage: `/sync <Local_ID>`")
+
+    local_id = context.args[0]
+    res = supabase.table('services').select("*").eq('id', local_id).execute()
+    
+    if res.data and res.data[0].get('channel_msg_id'):
+        s = res.data[0]
+        text = format_service_message(s)
+        
+        bot_username = (await context.bot.get_me()).username
+        deep_link = f"https://t.me/{bot_username}?start=order_{local_id}"
+        keyboard = [[InlineKeyboardButton("🚀 Order Now", url=deep_link)]]
+        
+        try:
+            await context.bot.edit_message_text(
+                chat_id=CHANNEL_ID,
+                message_id=s['channel_msg_id'],
+                text=text,
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            await update.message.reply_text(f"✅ Service {local_id} Updated!")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Update Failed: {e}")
+    else:
+        await update.message.reply_text("❌ Service or Message ID not found.")
+
+async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_GROUP_ID: return
+    if not context.args: return await update.message.reply_text("Usage: `/ban user@email.com`")
+    
+    email = context.args[0]
+    supabase.table('users').update({'is_banned': True}).eq('email', email).execute()
+    await update.message.reply_text(f"🚫 User {email} has been BANNED.")
+
+# --- MAIN EXECUTION ---
+
+if __name__ == '__main__':
+    # 1. Flask Server ကို Thread ခွဲပြီး Run မယ် (Render/UptimeRobot အတွက်)
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.start()
+
+    # 2. Bot Application တည်ဆောက်မယ်
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # --- HANDLERS SETUP ---
+    
+    # Login Conversation
+    login_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(login_start, pattern='^login_flow$')],
+        states={
+            WAITING_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_email)],
+            WAITING_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_login)]
+    )
+
+    # New Order Conversation
+    new_order_handler = ConversationHandler(
+        entry_points=[CommandHandler('neworder', new_order_start)],
+        states={
+            ORDER_WAITING_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_order_link)],
+            ORDER_WAITING_QTY: [MessageHandler(filters.TEXT & ~filters.COMMAND, new_order_qty)],
+            ORDER_CONFIRM: [CallbackQueryHandler(new_order_confirm)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_login)]
+    )
+
+    # Mass Order Conversation
+    mass_order_handler = ConversationHandler(
+        entry_points=[CommandHandler('massorder', mass_order_start)],
+        states={
+            WAITING_MASS_ORDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_mass_order)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_login)]
+    )
+
+    # Support Conversation
+    support_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(support_btn, pattern='^sup_')],
+        states={
+            WAITING_SUPPORT_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_support)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_login)]
+    )
+
+    # Adding All Handlers
+    app.add_handler(login_handler)
+    app.add_handler(new_order_handler)
+    app.add_handler(mass_order_handler)
+    app.add_handler(support_handler)
+    
+    # Basic Commands
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CommandHandler('help', help_command))
+    app.add_handler(CommandHandler('services', services_command))
+    app.add_handler(CommandHandler('history', history_command))
+    app.add_handler(CommandHandler('check', check_command))
+    app.add_handler(CommandHandler('support', support_start))
+
+    # Admin Commands
+    app.add_handler(CommandHandler('post', admin_post))
+    app.add_handler(CommandHandler('sync', admin_sync))
+    app.add_handler(CommandHandler('ban', admin_ban))
+
+    print("🤖 K2 Boost Bot is Running on Render/Local...")
+    app.run_polling()
+    
