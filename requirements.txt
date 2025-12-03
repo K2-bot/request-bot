@@ -1,4 +1,6 @@
-python-dotenv
-telebot
+python-telegram-bot
 supabase
+python-dotenv
 flask
+requests
+gotrue
