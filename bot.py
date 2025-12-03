@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import asyncio
 from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,7 +16,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", 0))
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
 
-# States for ConversationHandler
+# Conversation States
 WAITING_EMAIL, WAITING_PASSWORD, WAITING_MASS_ORDER, WAITING_SUPPORT_ID = range(4)
 ORDER_WAITING_LINK, ORDER_WAITING_QTY, ORDER_CONFIRM = range(4, 7)
 
@@ -44,30 +45,55 @@ def get_user(tg_id):
     res = supabase.table('users').select("*").eq('telegram_id', tg_id).execute()
     return res.data[0] if res.data else None
 
-def calculate_cost(quantity, service_data):
+def calculate_cost(quantity, service_data, user_currency='USD'):
     """ဈေးနှုန်းတွက်ချက်ခြင်း Formula"""
     per_qty = int(service_data.get('per_quantity', 1000))
     if per_qty == 0: per_qty = 1000
+    
+    # Currency အလိုက် ဈေးနှုန်းယူခြင်း (လက်ရှိမှာ USD default)
+    # အနာဂတ်တွင် MMK column ပါလာပါက ဒီနေရာတွင် logic ထည့်နိုင်သည်
     sell_price = float(service_data.get('sell_price', 0))
+    
     return (quantity / per_qty) * sell_price
 
-def format_service_message(service):
-    """Channel Post အတွက် စာသားဒီဇိုင်း"""
+# Channel တွင်ပြမည့် ပုံစံ (အတိုချုံး)
+def format_for_channel(service):
     name = service.get('service_name', 'Unknown')
-    price = service.get('sell_price', '0')
     min_qty = service.get('min', 0)
     max_qty = service.get('max', 0)
-    display_id = service.get('id') # Local ID (8, 9, etc.)
-
-    raw_note = service.get('note_mm') or service.get('note_eng') or ""
-    description = raw_note.replace("Description\n", "").strip()
+    display_id = service.get('id')
 
     return (
         f"🔥 *{name}*\n\n"
         f"🆔 *ID:* `{display_id}`\n"
-        f"💵 *Price:* ${price} (per {service.get('per_quantity', 1000)})\n"
         f"📉 *Min:* {min_qty} | 📈 *Max:* {max_qty}\n\n"
-        f"📝 *Details:*\n`{description}`"
+        f"👇 *မှာယူရန် အောက်ပါခလုတ်ကို နှိပ်ပါ*"
+    )
+
+# User မှာယူချိန်တွင်ပြမည့် ပုံစံ (အပြည့်အစုံ - Note & Price ပါဝင်)
+def format_for_user(service, user_lang='en', user_currency='USD'):
+    name = service.get('service_name', 'Unknown')
+    price = float(service.get('sell_price', 0))
+    min_qty = service.get('min', 0)
+    max_qty = service.get('max', 0)
+    per_qty = service.get('per_quantity', 1000)
+
+    # Language Logic
+    if user_lang == 'mm':
+        raw_note = service.get('note_mm') or ""
+    else:
+        raw_note = service.get('note_eng') or ""
+    
+    description = raw_note.replace("\\n", "\n").strip()
+    currency_symbol = "$" if user_currency == 'USD' else "Ks"
+
+    return (
+        f"✅ **Selected Service**\n"
+        f"🔥 *{name}*\n"
+        f"🆔 *ID:* `{service.get('id')}`\n"
+        f"💵 *Price:* {currency_symbol}{price} (per {per_qty})\n"
+        f"📉 *Limit:* {min_qty} - {max_qty}\n\n"
+        f"📝 *Description:*\n{description}"
     )
     # --- AUTHENTICATION FLOW (Login/Register) ---
 
@@ -112,14 +138,9 @@ async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # Database မှာ State 1 (Waiting Email) လို့မှတ်မယ်
+    # Update State in DB to 1 (Waiting Email)
     user_id = update.effective_user.id
-    supabase.table('users').update({'bot_state': 1}).eq('telegram_id', user_id).execute() # If row exists (manual fix needed if no row)
-    
-    # Note: For new users, we assume they might not have a row in 'users' linked to TG yet.
-    # So we handle state via Context here for simplicity in this flow, 
-    # OR we ask them to register first. Since logic says 'Login with Website Account',
-    # we proceed to ask email.
+    # Note: If user row doesn't exist yet, we rely on ContextHandler RAM state here first
     
     await query.edit_message_text("📧 သင့် Website Email ကို ရိုက်ထည့်ပေးပါ:")
     return WAITING_EMAIL
@@ -151,17 +172,20 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Supabase Auth Login
         session = supabase.auth.sign_in_with_password({"email": email, "password": password})
         if session.user:
-            # Link Telegram ID to User Row
+            # Link Telegram ID to User Row & Set Defaults
             supabase.table('users').update({
                 'telegram_id': update.effective_user.id,
-                'bot_state': 0, # Reset State
-                'temp_data': {} 
+                'bot_state': 0, 
+                'temp_data': {},
+                # Ensure defaults if null
+                'language': 'en',
+                'currency': 'USD'
             }).eq('id', session.user.id).execute()
             
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id, 
                 message_id=msg.message_id, 
-                text=f"✅ **Login Successful!**\nAccount: {email}\n\n/services ကိုနှိပ်၍ စတင်နိုင်ပါပြီ။",
+                text=f"✅ **Login Successful!**\nAccount: {email}\n\n/services ကိုနှိပ်၍ စတင်နိုင်ပါပြီ。",
                 parse_mode='Markdown'
             )
         else:
@@ -190,15 +214,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not db_user: return await update.message.reply_text("Login First: /start")
 
     balance = db_user.get('balance', 0)
+    currency = db_user.get('currency', 'USD')
+    symbol = "$" if currency == 'USD' else "Ks"
+
     text = (
-        f"👤 **Account Info**\n📧 Email: `{db_user.get('email')}`\n💰 Balance: **${balance:.4f}**\n\n"
-        "📋 **Commands:**\n"
-        "/services - ဈေးနှုန်းကြည့်ရန်\n"
-        "/neworder <ID> - မှာယူရန်\n"
-        "/massorder - အများကြီးမှာရန်\n"
-        "/history - မှတ်တမ်းကြည့်ရန်\n"
-        "/check <OrderID> - Status စစ်ရန်\n"
-        "/support - အကူအညီတောင်းရန်"
+        f"👤 **Account Info**\n"
+        f"📧 Email: `{db_user.get('email')}`\n"
+        f"💰 Balance: **{symbol}{balance:.4f}**\n\n"
+        "📋 **Available Commands:**\n"
+        "1️⃣ **/services** - ဈေးနှုန်းကြည့်ရန်\n"
+        "2️⃣ **/neworder <ID>** - မှာယူရန်\n"
+        "3️⃣ **/massorder** - အများကြီးမှာရန်\n"
+        "4️⃣ **/history** - မှတ်တမ်းကြည့်ရန်\n"
+        "5️⃣ **/check <ID>** - Status စစ်ရန်\n"
+        "6️⃣ **/support** - အကူအညီတောင်းရန်"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -207,8 +236,10 @@ async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_link = "https://t.me/YourChannelLink" # ပြင်ရန်
     await update.message.reply_text(
         f"🛍 **Services & Prices**\n\n"
-        f"ဝန်ဆောင်မှုများကို ဤ Channel တွင် ကြည့်ရှုနိုင်ပါသည်:\n👉 {channel_link}",
-        disable_web_page_preview=True
+        f"ဝန်ဆောင်မှုများကို ဤ Channel တွင် ကြည့်ရှုနိုင်ပါသည်:\n👉 {channel_link}\n\n"
+        "*(Channel ထဲရှိ Post များအောက်က 'Order Now' ခလုတ်ကို နှိပ်၍ အလွယ်တကူ မှာယူနိုင်ပါသည်)*",
+        disable_web_page_preview=True,
+        parse_mode='Markdown'
     )
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,25 +251,30 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     orders = supabase.table('WebsiteOrders').select("*").eq('email', db_user['email']).order('id', desc=True).limit(5).execute().data
     
     if not orders:
-        await update.message.reply_text("မရှိသေးပါ")
+        await update.message.reply_text("📝 Order မှတ်တမ်း မရှိသေးပါ။")
         return
         
     msg = "📜 **Recent Orders**\n\n"
     for o in orders:
-        msg += f"🆔 `{o['id']}` | Svc: {o['service']}\n🔗 {o['link'][:15]}...\n📊 Qty: {o['quantity']} | 💲 ${o['buy_charge']}\nSTATUS: **{o['status']}**\n\n"
+        msg += f"🆔 `{o['id']}` | Svc: {o['service']}\n🔗 {o['link'][:20]}...\n📊 Qty: {o['quantity']} | Status: **{o['status']}**\n------------------\n"
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return await update.message.reply_text("Usage: `/check 123`", parse_mode='Markdown')
-    ids = context.args[0].split(',')
+    
+    ids_raw = " ".join(context.args).replace(" ", "")
+    ids = ids_raw.split(',')
     msg = ""
+    
     for oid in ids:
+        if not oid.isdigit(): continue
         res = supabase.table('WebsiteOrders').select("status, start_count, remain").eq('id', oid).execute()
         if res.data:
             s = res.data[0]
-            msg += f"🆔 `{oid}`: **{s['status']}** (Start: {s['start_count']})\n"
+            msg += f"🆔 `{oid}`: **{s['status']}** (Start: {s.get('start_count','-')})\n"
         else:
-            msg += f"🆔 `{oid}`: Not Found\n"
+            msg += f"🆔 `{oid}`: ❌ Not Found\n"
+            
     await update.message.reply_text(msg, parse_mode='Markdown')
     # --- NEW ORDER SYSTEM (Step-by-Step) ---
 
@@ -263,16 +299,20 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     service = res.data[0]
     context.user_data['order_service'] = service
     
+    # User ၏ Language/Currency ကို ယူမည် (Default: en, USD)
+    user_lang = db_user.get('language', 'en')
+    user_curr = db_user.get('currency', 'USD')
+    context.user_data['user_currency'] = user_curr
+
+    # User အတွက် အသေးစိတ် အချက်အလက် (Note & Price) ကို ဖော်ပြမည်
+    full_info = format_for_user(service, user_lang, user_curr)
+    
     # Type အလိုက် Link တောင်းပုံ ပြောင်းခြင်း
     prompt = "🔗 **Link** (URL) ကို ထည့်သွင်းပေးပါ:"
     if service.get('use_type') == 'Telegram username' or 'Stars' in service.get('service_name', ''):
         prompt = "🔗 **Telegram Username** ကို ထည့်သွင်းပေးပါ (Example: @username):"
 
-    await update.message.reply_text(
-        f"✅ **Selected:** {service.get('service_name')}\n"
-        f"💵 **Price:** ${service.get('sell_price')}\n\n"
-        f"{prompt}", parse_mode='Markdown'
-    )
+    await update.message.reply_text(f"{full_info}\n\n{prompt}", parse_mode='Markdown')
     return ORDER_WAITING_LINK
 
 async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -297,15 +337,24 @@ async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ORDER_WAITING_QTY
 
     context.user_data['order_qty'] = qty
-    cost = calculate_cost(qty, svc)
+    
+    # Calculate Cost based on currency
+    user_curr = context.user_data.get('user_currency', 'USD')
+    cost = calculate_cost(qty, svc, user_curr)
     context.user_data['order_cost'] = cost
+    
+    symbol = "$" if user_curr == 'USD' else "Ks"
     
     # Confirm Button
     markup = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirm", callback_data="confirm_yes"), InlineKeyboardButton("❌ Cancel", callback_data="confirm_no")]
     ])
     await update.message.reply_text(
-        f"🧾 **Summary**\n🔗 {context.user_data['order_link']}\n📊 Qty: {qty}\n💵 Cost: **${cost:.4f}**\n\nConfirm?",
+        f"🧾 **Order Summary**\n"
+        f"🔗 Link: {context.user_data['order_link']}\n"
+        f"📊 Qty: {qty}\n"
+        f"💵 Cost: **{symbol}{cost:.4f}**\n\n"
+        f"မှာယူရန် သေချာပါသလား?",
         reply_markup=markup, parse_mode='Markdown'
     )
     return ORDER_CONFIRM
@@ -314,7 +363,7 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "confirm_no":
-        await query.edit_message_text("❌ Canceled.")
+        await query.edit_message_text("❌ Order Canceled.")
         return ConversationHandler.END
     
     user_id = update.effective_user.id
@@ -322,7 +371,8 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cost = context.user_data['order_cost']
     
     if db_user['balance'] < cost:
-        await query.edit_message_text(f"❌ Balance မလောက်ပါ။ Need: ${cost:.4f}")
+        symbol = "$" if db_user.get('currency') == 'USD' else "Ks"
+        await query.edit_message_text(f"❌ Balance မလောက်ပါ။ Need: {symbol}{cost:.4f}")
         return ConversationHandler.END
         
     # Process Order
@@ -339,7 +389,7 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "UsedType": "NewOrder"
     }
     supabase.table('WebsiteOrders').insert(order_data).execute()
-    await query.edit_message_text(f"✅ **Success!**\nBalance: ${new_bal:.4f}", parse_mode='Markdown')
+    await query.edit_message_text(f"✅ **Success!**\nBalance: {new_bal:.4f}", parse_mode='Markdown')
     return ConversationHandler.END
 
 # --- MASS ORDER SYSTEM ---
@@ -348,7 +398,7 @@ async def mass_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not get_user(update.effective_user.id): return await update.message.reply_text("Login First.")
     
     await update.message.reply_text(
-        "🚀 **Mass Order**\nFormat: `Local_ID | Link | Quantity`\n\nExample:\n`8 | https://link1 | 1000`\n`9 | @username | 50`\n\nSend your list now:",
+        "🚀 **Mass Order**\nFormat: `ID | Link | Quantity`\n\nExample:\n`8 | https://link1 | 1000`\n`9 | @username | 50`\n\n(စာရင်းကို ပို့ပေးပါ):",
         parse_mode='Markdown'
     )
     return WAITING_MASS_ORDER
@@ -363,7 +413,8 @@ async def process_mass_order(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     for i, line in enumerate(lines, 1):
         try:
-            parts = [p.strip() for p in line.split('|')]
+            # Separator check
+            parts = [p.strip() for p in line.split('|')] if '|' in line else [p.strip() for p in line.split(',')]
             if len(parts) != 3: raise Exception("Format Error")
             
             sid, link, qty = parts[0], parts[1], int(parts[2])
@@ -380,13 +431,14 @@ async def process_mass_order(update: Update, context: ContextTypes.DEFAULT_TYPE)
                  
             if qty < svc['min'] or qty > svc['max']: raise Exception("Qty Limit")
             
-            # Check Link/User
-            if (svc.get('use_type') == 'Telegram username' or 'Stars' in svc.get('service_name','')) and '@' not in link:
+            # Smart Input Check
+            is_username_type = (svc.get('use_type') == 'Telegram username' or 'Stars' in svc.get('service_name',''))
+            if is_username_type and ('@' not in link and 't.me' not in link):
                 raise Exception("Need @username")
-            elif svc.get('use_type') in ['Default', 'Promote'] and 'http' not in link:
+            elif not is_username_type and 'http' not in link:
                 raise Exception("Need URL")
                 
-            cost = calculate_cost(qty, svc)
+            cost = calculate_cost(qty, svc) # Uses USD Default for mass order for simplicity
             u = get_user(user_id)
             if u['balance'] < cost: raise Exception("No Balance")
             
@@ -414,13 +466,13 @@ async def process_mass_order(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("Refill", callback_data="sup_Refill"), InlineKeyboardButton("Cancel", callback_data="sup_Cancel")],
           [InlineKeyboardButton("SpeedUp", callback_data="sup_SpeedUp"), InlineKeyboardButton("Other", callback_data="sup_Other")]]
-    await update.message.reply_text("🛠 **Support**\nSelect Issue:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text("🛠 **Support Center**\nSelect Issue:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def support_btn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     context.user_data['sup_type'] = query.data.split("_")[1]
-    await query.edit_message_text(f"selected: {context.user_data['sup_type']}\nSend Order IDs (e.g. `123, 456`):")
+    await query.edit_message_text(f"✅ Selected: {context.user_data['sup_type']}\n\nSend Order IDs (e.g. `123, 456`):", parse_mode='Markdown')
     return WAITING_SUPPORT_ID
 
 async def process_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -430,7 +482,7 @@ async def process_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "email": user['email'], "subject": context.user_data['sup_type'],
         "order_id": ids, "message": "User Request via Bot", "status": "Pending", "UserStatus": "unread"
     }).execute()
-    await update.message.reply_text("✅ Ticket Created!")
+    await update.message.reply_text("✅ Ticket Created! Admin will check shortly.")
     return ConversationHandler.END
     # --- ADMIN COMMANDS ---
 
@@ -438,21 +490,22 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Admin Group ဟုတ်မဟုတ် စစ်ဆေးခြင်း
     if update.effective_chat.id != ADMIN_GROUP_ID: return
 
-    # နောက်ဆုံး Service 5 ခုကို ယူမည် (လိုသလို ပြင်နိုင်သည်)
-    services = supabase.table('services').select("*").order('id', desc=True).limit(5).execute().data
+    # ID ငယ်ရာမှ ကြီးရာသို့ Service အားလုံးကို ယူမည်
+    services = supabase.table('services').select("*").order('id', desc=False).execute().data
     
     if not services:
-        await update.message.reply_text("❌ No services found.")
+        await update.message.reply_text("❌ No services found in Database.")
         return
 
     bot_username = (await context.bot.get_me()).username
-    await update.message.reply_text("🔄 Posting services to channel...")
+    total = len(services)
+    await update.message.reply_text(f"🔄 Posting {total} services to channel... (3s delay each)")
 
-    for s in services:
+    for index, s in enumerate(services, 1):
         try:
-            # Local ID (8) ကိုသုံးပြီး Deep Link ချိတ်မည်
             local_id = s['id']
-            text = format_service_message(s)
+            # Channel အတွက် သီးသန့် Format (အတို) ကို သုံးမည်
+            text = format_for_channel(s)
             
             deep_link = f"https://t.me/{bot_username}?start=order_{local_id}"
             keyboard = [[InlineKeyboardButton("🚀 Order Now", url=deep_link)]]
@@ -468,10 +521,13 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Message ID ကို Database တွင် ပြန်သိမ်းခြင်း (Sync လုပ်ရန်အတွက်)
             supabase.table('services').update({'channel_msg_id': sent.message_id}).eq('id', local_id).execute()
             
+            # Flood Limit မထိအောင် ၃ စက္ကန့် နားမည်
+            await asyncio.sleep(3)
+
         except Exception as e:
             logger.error(f"Post Error ID {local_id}: {e}")
 
-    await update.message.reply_text("✅ Done posting.")
+    await update.message.reply_text("✅ All posts completed.")
 
 async def admin_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
@@ -482,7 +538,8 @@ async def admin_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if res.data and res.data[0].get('channel_msg_id'):
         s = res.data[0]
-        text = format_service_message(s)
+        # Channel Format အတိုင်း ပြန်ပြင်မည်
+        text = format_for_channel(s)
         
         bot_username = (await context.bot.get_me()).username
         deep_link = f"https://t.me/{bot_username}?start=order_{local_id}"
@@ -496,7 +553,7 @@ async def admin_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
-            await update.message.reply_text(f"✅ Service {local_id} Updated!")
+            await update.message.reply_text(f"✅ Service {local_id} Updated in Channel!")
         except Exception as e:
             await update.message.reply_text(f"❌ Update Failed: {e}")
     else:
@@ -507,6 +564,7 @@ async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return await update.message.reply_text("Usage: `/ban user@email.com`")
     
     email = context.args[0]
+    # Supabase Users Table တွင် is_banned = True လုပ်မည်
     supabase.table('users').update({'is_banned': True}).eq('email', email).execute()
     await update.message.reply_text(f"🚫 User {email} has been BANNED.")
 
@@ -580,6 +638,5 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('sync', admin_sync))
     app.add_handler(CommandHandler('ban', admin_ban))
 
-    print("🤖 K2 Boost Bot is Running on Render/Local...")
+    print("🤖 K2 Boost Bot is Running...")
     app.run_polling()
-    
