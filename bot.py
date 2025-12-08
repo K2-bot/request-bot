@@ -2,14 +2,14 @@ import os
 import logging
 import threading
 import asyncio
-import requests # API Call အတွက်
+import requests
 from flask import Flask
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ConversationHandler
 from supabase import create_client, Client
 
-# 1. Configuration Setup
+# 1. Configuration
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -18,16 +18,15 @@ SMM_API_KEY = os.getenv("SMM_API_KEY")
 SMM_API_URL = "https://smmgen.com/api/v2"
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", 0))
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))
-MMK_RATE = 5000 # 1 USD = 5000 MMK (Rate ပြောင်းချင်ရင် ဒီမှာပြင်ပါ)
+MMK_RATE = 5000 
 
-# Conversation States
+# States
 WAITING_EMAIL, WAITING_PASSWORD, LOGIN_LANG, LOGIN_CURR = range(4)
 ORDER_WAITING_LINK, ORDER_WAITING_QTY, ORDER_CONFIRM = range(4, 7)
 WAITING_MASS_INPUT, WAITING_MASS_CONFIRM = range(7, 9)
 WAITING_SUPPORT_ID = 9
 CMD_LANG_SELECT, CMD_CURR_SELECT = range(10, 12)
 
-# Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -41,57 +40,49 @@ def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# --- LOCALIZATION (ဘာသာပြန် စာသားများ) ---
+# --- LOCALIZATION ---
 TEXTS = {
     'en': {
         'welcome_login': "✅ **Login Successful!**\nAccount: {email}",
         'select_lang': "Please select your **Language**:",
         'select_curr': "Please select your **Currency**:",
-        'setup_done': "🎉 **Setup Complete!**\n\nType /help to start.",
-        'balance_low': "⚠️ **Insufficient Balance**\n\nPlease top up your account on our website.\n👉 Link: k2boostweb.com",
+        'setup_done': "🎉 **Setup Complete!**",
+        'balance_low': "⚠️ **Insufficient Balance**\n\nPlease top up on website: k2boostweb.com",
         'confirm_order': "❓ **Confirm Order?**\n\n💵 Cost: {cost}\n✅ Yes to proceed.",
         'order_success': "✅ **Order Placed!**\nID: {id}\nBalance: {bal}",
         'cancel': "🚫 Action Canceled.",
         'help_title': "👤 **Account Info**",
-        'mass_confirm': "📊 **Mass Order Summary**\n\n✅ Valid: {valid}\n❌ Invalid: {invalid}\n💵 Total Cost: {cost}\n\nDo you want to proceed?",
-        'status_completed': "Completed",
-        'status_pending': "Pending",
+        'mass_confirm': "📊 **Mass Order Summary**\n\n✅ Valid: {valid}\n❌ Invalid: {invalid}\n💵 Total Cost: {cost}\n\nProceed?",
         'help_msg': (
             "📋 **Available Commands:**\n"
             "1️⃣ /services - View Prices\n2️⃣ /neworder - Place Order\n"
             "3️⃣ /massorder - Bulk Order\n4️⃣ /history - View History\n"
             "5️⃣ /check <ID> - Check Status\n6️⃣ /support - Ticket/Refill\n"
             "7️⃣ /settings - Language/Currency\n\n"
-            "🌐 Website - k2boostweb.com\n📢 Channel - @k2boost\n👮 Admin - @K2boostservice\n\n"
-            "💡 *Please top up via Website if balance is low.*"
+            "🌐 Website - k2boostweb.com\n📢 Channel - @k2boost\n👮 Admin - @K2boostservice"
         )
     },
     'mm': {
         'welcome_login': "✅ **Login ဝင်ခြင်း အောင်မြင်ပါသည်**\nအကောင့်: {email}",
         'select_lang': "**ဘာသာစကား** ရွေးချယ်ပါ:",
         'select_curr': "**ငွေကြေး** အမျိုးအစား ရွေးချယ်ပါ:",
-        'setup_done': "🎉 **ပြင်ဆင်မှု ပြီးစီးပါပြီ!**\n\nစတင်ရန် /help ကို နှိပ်ပါ။",
-        'balance_low': "⚠️ **လက်ကျန်ငွေ မလုံလောက်ပါ**\n\nWebsite တွင် ငွေသွားရောက်ဖြည့်သွင်းပေးပါ။\n👉 Link: k2boostweb.com",
+        'setup_done': "🎉 **ပြင်ဆင်မှု ပြီးစီးပါပြီ!**",
+        'balance_low': "⚠️ **လက်ကျန်ငွေ မလုံလောက်ပါ**\n\nWebsite တွင် ငွေဖြည့်ပါ: k2boostweb.com",
         'confirm_order': "❓ **အော်ဒါတင်ရန် သေချာပါသလား?**\n\n💵 ကျသင့်ငွေ: {cost}\n✅ Yes ကိုနှိပ်၍ ဆက်သွားပါ။",
         'order_success': "✅ **အော်ဒါတင်ပြီးပါပြီ!**\nID: {id}\nလက်ကျန်: {bal}",
-        'cancel': "🚫 မလုပ်တော့ပါ။ (/help သို့ ပြန်သွားပါ)",
+        'cancel': "🚫 မလုပ်တော့ပါ။",
         'help_title': "👤 **အကောင့် အချက်အလက်**",
         'mass_confirm': "📊 **Mass Order အကျဉ်းချုပ်**\n\n✅ အောင်မြင်: {valid}\n❌ မှားယွင်း: {invalid}\n💵 စုစုပေါင်း: {cost}\n\nအော်ဒါတင်မှာ သေချာပါသလား?",
-        'status_completed': "ပြီးစီး",
-        'status_pending': "စောင့်ဆိုင်းဆဲ",
         'help_msg': (
             "📋 **အသုံးပြုနိုင်သော Commands:**\n"
             "1️⃣ /services - ဈေးနှုန်းကြည့်ရန်\n2️⃣ /neworder - မှာယူရန်\n"
             "3️⃣ /massorder - အများကြီးမှာရန်\n4️⃣ /history - မှတ်တမ်းကြည့်ရန်\n"
             "5️⃣ /check <ID> - Status စစ်ရန်\n6️⃣ /support - အကူအညီတောင်းရန်\n"
             "7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n"
-            "🌐 Website - k2boostweb.com\n📢 Channel - @k2boost\n👮 Admin - @K2boostservice\n\n"
-            "💡 *ငွေဖြည့်လိုပါက Website တွင် ဝင်ရောက်ဖြည့်သွင်းပါ။*"
+            "🌐 Website - k2boostweb.com\n📢 Channel - @k2boost\n👮 Admin - @K2boostservice"
         )
     }
 }
-
-# --- HELPER FUNCTIONS ---
 
 def get_user(tg_id):
     res = supabase.table('users').select("*").eq('telegram_id', tg_id).execute()
@@ -102,8 +93,7 @@ def get_text(lang, key, **kwargs):
     return TEXTS[lang_code].get(key, key).format(**kwargs)
 
 def format_currency(amount, currency):
-    if currency == 'MMK':
-        return f"{amount * MMK_RATE:,.0f} Ks"
+    if currency == 'MMK': return f"{amount * MMK_RATE:,.0f} Ks"
     return f"${amount:.4f}"
 
 def calculate_cost(quantity, service_data):
@@ -112,46 +102,34 @@ def calculate_cost(quantity, service_data):
     sell_price = float(service_data.get('sell_price', 0))
     return (quantity / per_qty) * sell_price
 
-# User Format (Detailed with Note & Price)
 def format_for_user(service, lang='en', curr='USD'):
     name = service.get('service_name', 'Unknown')
     price_usd = float(service.get('sell_price', 0))
     min_q = service.get('min', 0)
     max_q = service.get('max', 0)
     per_qty = service.get('per_quantity', 1000)
-
     raw_note = service.get('note_mm') if lang == 'mm' else service.get('note_eng')
     desc = (raw_note or "").replace("\\n", "\n").strip()
-    
     price_display = format_currency(price_usd, curr)
-
-    return (
-        f"✅ **Selected Service**\n🔥 *{name}*\n🆔 *ID:* `{service.get('id')}`\n"
-        f"💵 *Price:* {price_display} (per {per_qty})\n📉 *Limit:* {min_q} - {max_q}\n\n"
-        f"📝 *Description:*\n{desc}"
-    )
-    # --- AUTHENTICATION FLOW ---
+    return (f"✅ **Selected Service**\n🔥 *{name}*\n🆔 *ID:* `{service.get('id')}`\n"
+            f"💵 *Price:* {price_display} (per {per_qty})\n📉 *Limit:* {min_q} - {max_q}\n\n📝 *Description:*\n{desc}")
+    # --- AUTH & DASHBOARD ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db_user = get_user(user.id)
     args = context.args
 
-    # Login မဝင်ရသေးလျင်
     if not db_user:
         kb = [[InlineKeyboardButton("🔐 Login", callback_data="login_flow")],
               [InlineKeyboardButton("📝 Register", url="https://k2boostweb.com/createaccount")]]
         await update.message.reply_text(f"Welcome {user.first_name}!\nPlease Login or Register.", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    # Deep Link Handler (Channel မှ နှိပ်လာလျင်)
-    if args and args[0].startswith("order_"):
-        # This will be picked up by the 'neworder' handler via regex in Main
-        pass 
-    else:
+    # Deep Link Pass-through is handled by regex in Main
+    if not (args and args[0].startswith("order_")):
         await help_command(update, context)
 
-# Login Steps
 async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.edit_message_text("📧 Enter your Website Email:")
@@ -172,10 +150,7 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         session = supabase.auth.sign_in_with_password({"email": email, "password": password})
         if session.user:
-            # Save Telegram ID
             supabase.table('users').update({'telegram_id': update.effective_user.id}).eq('id', session.user.id).execute()
-            
-            # Ask Language
             kb = [[InlineKeyboardButton("🇬🇧 English", callback_data="lang_en"), InlineKeyboardButton("🇲🇲 Myanmar", callback_data="lang_mm")]]
             await context.bot.edit_message_text(
                 chat_id=update.effective_chat.id, message_id=msg.message_id,
@@ -190,13 +165,11 @@ async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="❌ Error.")
         return ConversationHandler.END
 
-# Settings (Language/Currency)
 async def login_set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     lang = query.data.split("_")[1]
     context.user_data['temp_lang'] = lang
-    
     text = get_text(lang, 'select_curr')
     kb = [[InlineKeyboardButton("💵 USD ($)", callback_data="curr_USD"), InlineKeyboardButton("💵 MMK (Ks)", callback_data="curr_MMK")]]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
@@ -208,49 +181,11 @@ async def login_set_curr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     curr = query.data.split("_")[1]
     lang = context.user_data.get('temp_lang', 'en')
     user_id = update.effective_user.id
+    supabase.table('users').update({'language': lang, 'currency': curr}).eq('telegram_id', user_id).execute()
     
-    supabase.table('users').update({'language': lang, 'currency': curr, 'bot_state': 0}).eq('telegram_id', user_id).execute()
     await query.edit_message_text(get_text(lang, 'setup_done'), parse_mode='Markdown')
-    await help_command(update, context)
+    await help_command(update, context) # 🔥 Auto Redirect to Dashboard
     return ConversationHandler.END
-
-# --- SETTINGS COMMANDS (/settings) ---
-async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton("🗣 Language", callback_data="set_lang_start"), 
-           InlineKeyboardButton("💰 Currency", callback_data="set_curr_start")]]
-    await update.message.reply_text("⚙️ **Settings**\nChoose option:", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-
-async def change_lang_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton("🇬🇧 English", callback_data="set_en"), InlineKeyboardButton("🇲🇲 Myanmar", callback_data="set_mm")]]
-    if update.callback_query: await update.callback_query.message.edit_text("Select Language:", reply_markup=InlineKeyboardMarkup(kb))
-    else: await update.message.reply_text("Select Language:", reply_markup=InlineKeyboardMarkup(kb))
-    return CMD_LANG_SELECT
-
-async def change_curr_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton("USD ($)", callback_data="set_USD"), InlineKeyboardButton("MMK (Ks)", callback_data="set_MMK")]]
-    if update.callback_query: await update.callback_query.message.edit_text("Select Currency:", reply_markup=InlineKeyboardMarkup(kb))
-    else: await update.message.reply_text("Select Currency:", reply_markup=InlineKeyboardMarkup(kb))
-    return CMD_CURR_SELECT
-
-async def setting_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    user_id = update.effective_user.id
-    
-    if data.startswith("set_en") or data.startswith("set_mm"):
-        lang = "en" if "en" in data else "mm"
-        supabase.table('users').update({'language': lang}).eq('telegram_id', user_id).execute()
-        await query.message.edit_text("✅ Language Updated!")
-    elif data.startswith("set_USD") or data.startswith("set_MMK"):
-        curr = "USD" if "USD" in data else "MMK"
-        supabase.table('users').update({'currency': curr}).eq('telegram_id', user_id).execute()
-        await query.message.edit_text("✅ Currency Updated!")
-    
-    await help_command(update, context)
-    return ConversationHandler.END
-
-# --- DASHBOARD (/help) ---
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -259,16 +194,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lang = db_user.get('language', 'en')
     curr = db_user.get('currency', 'USD')
-    bal = float(db_user.get('balance', 0))
-    email = db_user.get('email')
-    bal_display = format_currency(bal, curr)
+    bal_display = format_currency(float(db_user.get('balance', 0)), curr)
     
-    msg = get_text(lang, 'help_msg', email=email, balance=bal_display)
+    title = get_text(lang, 'help_title')
+    body = get_text(lang, 'help_msg')
+    msg = f"{title}\n📧 Email: `{db_user.get('email')}`\n💰 Balance: **{bal_display}**\n\n{body}"
     
     if update.callback_query: await update.callback_query.message.reply_text(msg, parse_mode='Markdown')
     else: await update.message.reply_text(msg, parse_mode='Markdown')
-
-# --- CHECK & HISTORY (Specific Format) ---
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args: return await update.message.reply_text("Usage: `/check 1234`", parse_mode='Markdown')
@@ -279,80 +212,85 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for oid in ids:
         oid = oid.strip()
         if not oid.isdigit(): continue
-        
-        # Check ownership
         o_res = supabase.table('WebsiteOrders').select("*").eq('id', oid).eq('email', user['email']).execute()
-        
         if o_res.data:
             o = o_res.data[0]
             s_res = supabase.table('services').select('service_name').eq('service_id', o['service']).execute()
             s_name = s_res.data[0]['service_name'] if s_res.data else "Unknown"
-            
-            # Requested Format: 🆔 1433 ၊ 📦 Service: ...
-            msg += (
-                f"🆔 {oid} ၊ 📦 Service: {s_name} ၊ "
-                f"🔢 Quantity: {o['quantity']} ၊ 🔗 Link: {o['link']} ၊ "
-                f"✅ Status: {o['status']}\n\n"
-            )
+            msg += (f"🆔 `{oid}` ၊ 📦 Service: {s_name} ၊ 🔢 Quantity: {o['quantity']} ၊ "
+                    f"🔗 Link: {o['link']} ၊ ✅ Status: {o['status']}\n\n")
         else:
-            # Requested Error Format (English Only)
-            msg += (
-                "❌ Unable to Process:\n"
-                f"Order {oid} - Not found or does not belong to your account\n\n"
-            )
-            
+            msg += f"❌ Unable to Process:\nOrder {oid} - Not found or does not belong to your account\n\n"
     await update.message.reply_text(msg, disable_web_page_preview=True)
 
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db_user = get_user(user_id)
     orders = supabase.table('WebsiteOrders').select("*").eq('email', db_user['email']).order('id', desc=True).limit(5).execute().data
-    
     if not orders: return await update.message.reply_text("No history.")
-    
     msg = "📜 **Order History**\n\n"
     for o in orders:
         s_res = supabase.table('services').select('service_name').eq('service_id', o['service']).execute()
         s_name = s_res.data[0]['service_name'] if s_res.data else "Service"
-        
-        msg += (
-            f"🆔 {o['id']} ၊ 📦 {s_name}\n"
-            f"🔢 Qty: {o['quantity']} ၊ ✅ {o['status']}\n"
-            f"🔗 {o['link']}\n"
-            "-------------------\n"
-        )
+        msg += (f"🆔 `{o['id']}` ၊ 📦 Service: {s_name} ၊ 🔢 Quantity: {o['quantity']} ၊ "
+                f"🔗 Link: {o['link']} ၊ ✅ Status: {o['status']}\n-------------------\n")
     await update.message.reply_text(msg, disable_web_page_preview=True)
 
-async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🛍 **Services:**\nCheck @k2boost for prices.", parse_mode='Markdown')
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [[InlineKeyboardButton("🗣 Language", callback_data="set_lang_start"), InlineKeyboardButton("💰 Currency", callback_data="set_curr_start")]]
+    await update.message.reply_text("⚙️ **Settings**", reply_markup=InlineKeyboardMarkup(kb))
+
+async def setting_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    uid = update.effective_user.id
+    
+    if "set_lang_start" in data:
+        kb = [[InlineKeyboardButton("🇬🇧 English", callback_data="set_en"), InlineKeyboardButton("🇲🇲 Myanmar", callback_data="set_mm")]]
+        await query.message.edit_text("Select Language:", reply_markup=InlineKeyboardMarkup(kb))
+        return CMD_LANG_SELECT
+    elif "set_curr_start" in data:
+        kb = [[InlineKeyboardButton("USD ($)", callback_data="set_USD"), InlineKeyboardButton("MMK (Ks)", callback_data="set_MMK")]]
+        await query.message.edit_text("Select Currency:", reply_markup=InlineKeyboardMarkup(kb))
+        return CMD_CURR_SELECT
+    
+    # Save Selection
+    if "set_en" in data or "set_mm" in data:
+        lang = "en" if "en" in data else "mm"
+        supabase.table('users').update({'language': lang}).eq('telegram_id', uid).execute()
+        await query.message.edit_text("✅ Language Updated!")
+    elif "set_USD" in data or "set_MMK" in data:
+        curr = "USD" if "USD" in data else "MMK"
+        supabase.table('users').update({'currency': curr}).eq('telegram_id', uid).execute()
+        await query.message.edit_text("✅ Currency Updated!")
+        
+    await help_command(update, context)
+    return ConversationHandler.END
 
 async def cancel_op(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚫 Canceled.")
     await help_command(update, context)
     return ConversationHandler.END
-    # --- NEW ORDER (/neworder) ---
+
+# --- NEW ORDER (/neworder) ---
 
 async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.id
     db_user = get_user(user.id)
-    
     if not db_user:
         kb = [[InlineKeyboardButton("🔐 Login", callback_data="login_flow")]]
         await update.message.reply_text("⚠️ Please Login First.", reply_markup=InlineKeyboardMarkup(kb))
         return ConversationHandler.END
 
+    # ID Logic Fix
     target_id = None
     if context.args:
         target_id = context.args[0]
-    elif context.user_data.get('deep_link_id'): # From regex handler hack if needed
-        pass
     
-    # Check if triggered by /start order_123
-    # Context args for /start order_123 comes as ['order_123']
-    if not target_id and context.args: target_id = context.args[0]
-
+    # Deep Link Regex Handling
     if not target_id:
-        await update.message.reply_text("⚠️ Usage: `/neworder <ID>`", parse_mode='Markdown')
+        await update.message.reply_text("⚠️ Usage: `/neworder <ID>` (e.g., `/neworder 12`)", parse_mode='Markdown')
         return ConversationHandler.END
         
     if "order_" in target_id: target_id = target_id.split("_")[1]
@@ -364,13 +302,13 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     svc = res.data[0]
     context.user_data['order_svc'] = svc
-    
     lang = db_user.get('language', 'en')
     curr = db_user.get('currency', 'USD')
     info = format_for_user(svc, lang, curr)
     
     prompt = "🔗 **Enter Link (URL):**"
-    if svc.get('use_type') == 'Telegram username': prompt = "🔗 **Enter Telegram Username (@...):**"
+    if svc.get('use_type') == 'Telegram username' or 'Stars' in svc.get('service_name', ''):
+        prompt = "🔗 **Enter Telegram Username (@...):**"
     
     await update.message.reply_text(f"{info}\n\n{prompt}", parse_mode='Markdown')
     return ORDER_WAITING_LINK
@@ -383,14 +321,11 @@ async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: qty = int(update.message.text.strip())
-    except: 
-        await update.message.reply_text("❌ Numbers only.")
-        return ORDER_WAITING_QTY
+    except: return await update.message.reply_text("❌ Numbers only.")
     
     svc = context.user_data['order_svc']
     if qty < svc['min'] or qty > svc['max']:
-        await update.message.reply_text(f"❌ Invalid Qty (Min: {svc['min']} - Max: {svc['max']})")
-        return ORDER_WAITING_QTY
+        return await update.message.reply_text(f"❌ Invalid Qty (Min: {svc['min']} - Max: {svc['max']})")
 
     context.user_data['order_qty'] = qty
     cost_usd = calculate_cost(qty, svc)
@@ -409,16 +344,15 @@ async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    if query.data == 'no':
-        await query.edit_message_text("🚫 Canceled.")
-        await help_command(update, context)
-        return ConversationHandler.END
-        
     user = get_user(update.effective_user.id)
     lang = user.get('language', 'en')
-    cost_usd = context.user_data['cost_usd']
     
+    if query.data == 'no':
+        await query.edit_message_text(get_text(lang, 'cancel'))
+        await help_command(update, context) # 🔥 Redirect
+        return ConversationHandler.END
+        
+    cost_usd = context.user_data['cost_usd']
     if float(user['balance']) < cost_usd:
         await query.edit_message_text(get_text(lang, 'balance_low'))
         return ConversationHandler.END
@@ -436,9 +370,10 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     curr = user.get('currency', 'USD')
     bal_display = format_currency(new_bal, curr)
     await query.edit_message_text(get_text(lang, 'order_success', id=context.user_data['order_svc']['id'], bal=bal_display), parse_mode='Markdown')
+    await help_command(update, context) # 🔥 Redirect
     return ConversationHandler.END
 
-# --- MASS ORDER (Detailed Errors) ---
+# --- MASS ORDER ---
 
 async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 **Mass Order**\n`ID | Link | Qty`\n\nSend list:", parse_mode='Markdown')
@@ -456,29 +391,20 @@ async def mass_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if len(parts) != 3: 
                 error_log += f"❌ Line {i}: Invalid Format (Need ID|Link|Qty)\n"
                 continue
-                
-            sid, link, qty_str = parts
-            if not qty_str.isdigit():
-                error_log += f"❌ Line {i}: Qty must be number\n"
-                continue
-            qty = int(qty_str)
-
+            sid, link, qty = parts[0], parts[1], int(parts[2])
             res = supabase.table('services').select("*").eq('id', sid).execute()
             if not res.data:
                 error_log += f"❌ Line {i}: Service ID {sid} Not Found\n"
                 continue
-                
             svc = res.data[0]
             if qty < svc['min'] or qty > svc['max']:
                 error_log += f"❌ Line {i}: Qty Limit ({svc['min']}-{svc['max']})\n"
                 continue
-
             cost = calculate_cost(qty, svc)
             total_cost_usd += cost
             valid_orders.append({'svc': svc, 'link': link, 'qty': qty, 'cost': cost})
-            
-        except Exception as e:
-            error_log += f"❌ Line {i}: Unknown Error ({str(e)})\n"
+        except: 
+            error_log += f"❌ Line {i}: Syntax Error\n"
             continue
     
     context.user_data['mass_queue'] = valid_orders
@@ -490,31 +416,31 @@ async def mass_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cost_display = format_currency(total_cost_usd, curr)
     
     summary = get_text(lang, 'mass_confirm', valid=len(valid_orders), invalid=len(lines)-len(valid_orders), cost=cost_display)
-    
-    if error_log: summary += f"\n\n⚠️ **Errors:**\n{error_log}\n"
+    if error_log: summary += f"\n\n⚠️ **Errors:**\n{error_log}"
     
     if valid_orders:
-        kb = [[InlineKeyboardButton("✅ Confirm All", callback_data="mass_yes"), InlineKeyboardButton("❌ Cancel", callback_data="mass_no")]]
+        kb = [[InlineKeyboardButton("✅ Yes", callback_data="mass_yes"), InlineKeyboardButton("❌ No", callback_data="mass_no")]]
         await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
         return WAITING_MASS_CONFIRM
     else:
-        await update.message.reply_text(summary + "\n❌ No valid orders to proceed.", parse_mode='Markdown')
+        await update.message.reply_text(summary + "\n❌ No valid orders.", parse_mode='Markdown')
+        await help_command(update, context)
         return ConversationHandler.END
 
 async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user = get_user(update.effective_user.id)
+    lang = user.get('language', 'en')
     
     if query.data == 'mass_no':
-        await query.edit_message_text("🚫 Canceled.")
-        await help_command(update, context)
+        await query.edit_message_text(get_text(lang, 'cancel'))
+        await help_command(update, context) # 🔥 Redirect
         return ConversationHandler.END
-    
-    user = get_user(update.effective_user.id)
+        
     total_usd = context.user_data['mass_total']
-    
     if float(user['balance']) < total_usd:
-        await query.edit_message_text("⚠️ Insufficient Balance.")
+        await query.edit_message_text(get_text(lang, 'balance_low'))
         return ConversationHandler.END
         
     new_bal = float(user['balance']) - total_usd
@@ -522,14 +448,15 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for o in context.user_data['mass_queue']:
         supabase.table('WebsiteOrders').insert({
-            "email": user['email'], "service": o['svc']['service_id'], "link": o['link'], 
-            "quantity": o['qty'], "buy_charge": o['cost'], "status": "Pending", "UsedType": "MassOrder",
-            "supplier_service_id": o['svc']['service_id']
+            "email": user['email'], "service": o['svc']['service_id'], "link": o['link'], "quantity": o['qty'],
+            "buy_charge": o['cost'], "status": "Pending", "UsedType": "MassOrder", "supplier_service_id": o['svc']['service_id']
         }).execute()
         
     await query.edit_message_text("✅ Mass Order Placed!")
+    await help_command(update, context) # 🔥 Redirect
     return ConversationHandler.END
-    # --- SUPPORT (Direct API Refill) ---
+
+    # --- SUPPORT ---
 
 async def sup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [[InlineKeyboardButton("Refill", callback_data="s_Refill"), InlineKeyboardButton("Cancel", callback_data="s_Cancel")]]
@@ -551,50 +478,48 @@ async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for lid in ids:
         lid = lid.strip()
         if not lid.isdigit(): continue
-
-        order_res = supabase.table('WebsiteOrders').select("*").eq('id', lid).execute()
-        if not order_res.data:
-            msg_out += f"❌ Unable to Process:\nOrder {lid} - Not found or does not belong to your account\n\n"
-            continue
-
-        order = order_res.data[0]
-        supplier_order_id = order.get('supplier_order_id')
-
-        # REFILL API LOGIC
-        if stype == 'Refill':
-            if not supplier_order_id:
-                msg_out += f"❌ Order {lid}: No Supplier ID\n"
-                continue
-            try:
-                payload = {'key': SMM_API_KEY, 'action': 'refill', 'order': supplier_order_id}
-                res = requests.post(SMM_API_URL, data=payload).json()
-                
-                if 'refill' in res:
-                    supabase.table('SupportBox').insert({
-                        "email": user['email'], "subject": "Refill", "order_id": lid,
-                        "supplier_order_id": supplier_order_id, "supplier_refill_id": res['refill'],
-                        "refill_status": "In Progress", "status": "In Progress"
-                    }).execute()
-                    msg_out += (
-                        "✅ Confirmed Orders:\n"
-                        f"Order {lid}: refill request has been received. Processed within 24-72 hours.\n\n"
-                    )
-                elif 'error' in res:
-                    msg_out += f"❌ Unable to Process:\nOrder {lid} - {res['error']}\n\n"
-            except Exception as e:
-                msg_out += f"❌ Error: {e}\n"
+        
+        # Security Check
+        order_res = supabase.table('WebsiteOrders').select("*").eq('id', lid).eq('email', user['email']).execute()
+        
+        if order_res.data:
+            order = order_res.data[0]
+            sup_id = order.get('supplier_order_id')
+            
+            # REFILL LOGIC
+            if stype == 'Refill':
+                if not sup_id:
+                    msg_out += f"❌ Order {lid}: No Supplier ID\n"
+                    continue
+                try:
+                    payload = {'key': SMM_API_KEY, 'action': 'refill', 'order': sup_id}
+                    res = requests.post(SMM_API_URL, data=payload).json()
+                    
+                    if 'refill' in res:
+                        supabase.table('SupportBox').insert({
+                            "email": user['email'], "subject": "Refill", "order_id": lid,
+                            "supplier_order_id": sup_id, "supplier_refill_id": res['refill'],
+                            "refill_status": "In Progress", "status": "In Progress"
+                        }).execute()
+                        msg_out += (f"✅ Confirmed Orders:\nOrder {lid}: refill request has been received. "
+                                    "The refill will be processed within 24-72 hours.\n\n")
+                    elif 'error' in res:
+                        msg_out += f"❌ Unable to Process:\nOrder {lid} - {res['error']}\n\n"
+                except Exception as e:
+                    msg_out += f"❌ Error: {e}\n"
+            else:
+                supabase.table('SupportBox').insert({
+                    "email": user['email'], "subject": stype, "order_id": lid, "status": "Pending"
+                }).execute()
+                msg_out += f"✅ Ticket {lid}: Created\n"
         else:
-            supabase.table('SupportBox').insert({
-                "email": user['email'], "subject": stype, "order_id": lid, "status": "Pending"
-            }).execute()
-            msg_out += f"✅ Ticket {lid}: Created\n"
+            msg_out += f"❌ Unable to Process:\nOrder {lid} - Not found or does not belong to your account\n\n"
 
-    await update.message.reply_text(msg_out + "Thank you for your patience!")
-    await help_command(update, context)
+    await update.message.reply_text(f"{msg_out}Thank you for your patience!")
+    await help_command(update, context) # 🔥 Redirect
     return ConversationHandler.END
 
-# --- ADMIN POST (HTML Catalog - No Price) ---
-
+# --- ADMIN POST ---
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID: return
     services = supabase.table('services').select("*").order('id', desc=False).execute().data
@@ -607,29 +532,21 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         grouped[cat].append(s)
         
     bot_username = (await context.bot.get_me()).username
-    await update.message.reply_text(f"Posting {len(grouped)} Categories (HTML)...")
+    await update.message.reply_text(f"Posting {len(grouped)} Categories (HTML/No Price)...")
     
     for cat, items in grouped.items():
         try:
             safe_cat = cat.replace("<", "&lt;").replace(">", "&gt;")
             msg = f"📂 <b>{safe_cat}</b>\n➖➖➖➖➖➖➖➖➖➖\n\n"
-            
             for s in items:
                 lid = s['id']
-                # Name Cleanup
-                raw_name = s.get('service_name', 'Unknown')
-                safe_name = raw_name.replace("<", "&lt;").replace(">", "&gt;")
-                
-                # Refill Icon Logic
-                full_text = (raw_name + (s.get('note_eng') or "")).lower()
-                icon = "🚫" if 'no refill' in full_text else ("♻️" if 'refill' in full_text else "⚡")
-                
+                safe_name = s.get('service_name', 'Unknown').replace("<", "&lt;").replace(">", "&gt;")
+                ft = (s.get('service_name') + (s.get('note_eng') or "")).lower()
+                icon = "🚫" if 'no refill' in ft else ("♻️" if 'refill' in ft else "⚡")
                 link = f"https://t.me/{bot_username}?start=order_{lid}"
-                # No Price Display as requested
                 msg += f"{icon} <a href='{link}'>ID:{lid} - {safe_name}</a>\n\n"
             
             msg += "➖➖➖➖➖➖➖➖➖➖\n👇 <b>Click blue text to Order</b>"
-            
             sent = await context.bot.send_message(CHANNEL_ID, text=msg, parse_mode='HTML', disable_web_page_preview=True)
             for s in items: supabase.table('services').update({'channel_msg_id': sent.message_id}).eq('id', s['id']).execute()
             await asyncio.sleep(3)
@@ -659,6 +576,7 @@ if __name__ == '__main__':
     new_h = ConversationHandler(
         entry_points=[
             CommandHandler('neworder', new_order_start),
+            # 🔥 Fix: Ensure regex captures start order_123 correctly
             CommandHandler('start', new_order_start, filters.Regex('order_'))
         ],
         states={ORDER_WAITING_LINK: [MessageHandler(filters.TEXT, new_order_link)],
@@ -679,7 +597,7 @@ if __name__ == '__main__':
     
     sett_h = ConversationHandler(
         entry_points=[CommandHandler('settings', settings_command), 
-                      CallbackQueryHandler(change_lang_start, pattern='^set_lang_start'), 
+                      CallbackQueryHandler(change_lang_start, pattern='^set_lang_start'),
                       CallbackQueryHandler(change_curr_start, pattern='^set_curr_start')],
         states={CMD_LANG_SELECT: [CallbackQueryHandler(setting_process)],
                 CMD_CURR_SELECT: [CallbackQueryHandler(setting_process)]},
@@ -701,3 +619,4 @@ if __name__ == '__main__':
 
     print("Bot Running...")
     app.run_polling()
+    
