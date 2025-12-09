@@ -676,6 +676,12 @@ if __name__ == '__main__':
                 CMD_CURR_SELECT: [CallbackQueryHandler(setting_process)]},
         fallbacks=[CommandHandler('cancel', cancel_op)])
 
+    async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🛍 **Services & Prices**\n\n"
+        "ဝန်ဆောင်မှု ဈေးနှုန်းများကို Channel တွင် ကြည့်ရှုနိုင်ပါသည်:\n👉 @k2boost",
+        parse_mode='Markdown'
+    )
     app.add_handler(login_h)
     app.add_handler(new_h)
     app.add_handler(mass_h)
@@ -692,3 +698,4 @@ if __name__ == '__main__':
 
     print("Bot Running...")
     app.run_polling()
+
