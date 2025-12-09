@@ -272,8 +272,7 @@ async def cancel_op(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚫 Canceled.")
     await help_command(update, context)
     return ConversationHandler.END
-
-# --- NEW ORDER (/neworder) ---
+    # --- NEW ORDER (/neworder) ---
 
 async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user.id
@@ -455,7 +454,6 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("✅ Mass Order Placed!")
     await help_command(update, context) # 🔥 Redirect
     return ConversationHandler.END
-
     # --- SUPPORT ---
 
 async def sup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -619,4 +617,3 @@ if __name__ == '__main__':
 
     print("Bot Running...")
     app.run_polling()
-    
