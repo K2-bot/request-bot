@@ -289,20 +289,28 @@ async def setting_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- ORDER SYSTEMS ---
 
-async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.id
-    db_user = get_user(user.id)
-    if not db_user: return await start(update, context)
+# --- NEW ORDER (/neworder) ---
 
-    # Resolve ID: 1. Deep Link Context, 2. Regex Args, 3. Command Args
-    target_id = None
-    if context.user_data.get('deep_link_id'):
-        target_id = context.user_data.pop('deep_link_id')
-    elif context.args:
-        target_id = context.args[0]
+async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🔥 FIX: user ကို object အနေနဲ့ယူမှ .id သုံးလို့ရမယ်
+    user = update.effective_user 
+    db_user = get_user(user.id)
     
+    if not db_user:
+        kb = [[InlineKeyboardButton("🔐 Login", callback_data="login_flow")]]
+        await update.message.reply_text(f"⚠️ Hello {user.first_name}, please Login first.", reply_markup=InlineKeyboardMarkup(kb))
+        return ConversationHandler.END
+
+    # ID Logic: 1. Args, 2. Deep Link Context
+    target_id = None
+    if context.args:
+        target_id = context.args[0]
+    elif context.user_data.get('deep_link_id'):
+        target_id = context.user_data.pop('deep_link_id')
+    
+    # Validation
     if not target_id:
-        await update.message.reply_text("⚠️ Usage: `/neworder <ID>`", parse_mode='Markdown')
+        await update.message.reply_text("⚠️ Usage: `/neworder <ID>` (e.g., `/neworder 12`)", parse_mode='Markdown')
         return ConversationHandler.END
         
     if "order_" in target_id: target_id = target_id.split("_")[1]
@@ -316,12 +324,13 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['order_svc'] = svc
     lang = db_user.get('language', 'en')
     curr = db_user.get('currency', 'USD')
+    info = format_for_user(svc, lang, curr)
     
     prompt = "🔗 **Enter Link (URL):**"
     if svc.get('use_type') == 'Telegram username' or 'Stars' in svc.get('service_name', ''):
         prompt = "🔗 **Enter Telegram Username (@...):**"
     
-    await update.message.reply_text(f"{format_for_user(svc, lang, curr)}\n\n{prompt}", parse_mode='Markdown')
+    await update.message.reply_text(f"{info}\n\n{prompt}", parse_mode='Markdown')
     return ORDER_WAITING_LINK
 
 async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,11 +341,14 @@ async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: qty = int(update.message.text.strip())
-    except: return await update.message.reply_text("❌ Numbers only.")
+    except: 
+        await update.message.reply_text("❌ Numbers only.")
+        return ORDER_WAITING_QTY
     
     svc = context.user_data['order_svc']
     if qty < svc['min'] or qty > svc['max']:
-        return await update.message.reply_text(f"❌ Invalid Qty (Min: {svc['min']} - Max: {svc['max']})")
+        await update.message.reply_text(f"❌ Invalid Qty (Min: {svc['min']} - Max: {svc['max']})")
+        return ORDER_WAITING_QTY
 
     context.user_data['order_qty'] = qty
     cost_usd = calculate_cost(qty, svc)
@@ -356,36 +368,45 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    if query.data == 'no':
-        await query.edit_message_text("🚫 Canceled.")
-        await help_command(update, context)
-        return ConversationHandler.END
-        
     user = get_user(update.effective_user.id)
     lang = user.get('language', 'en')
-    cost_usd = context.user_data['cost_usd']
     
+    if query.data == 'no':
+        await query.edit_message_text(get_text(lang, 'cancel'))
+        await help_command(update, context) # Redirect
+        return ConversationHandler.END
+        
+    cost_usd = context.user_data['cost_usd']
     if float(user['balance']) < cost_usd:
         await query.edit_message_text(get_text(lang, 'balance_low'))
         return ConversationHandler.END
         
+    # Execute
     new_bal = float(user['balance']) - cost_usd
     supabase.table('users').update({'balance': new_bal}).eq('telegram_id', user.id).execute()
     
     o_data = {
         "email": user['email'], "service": context.user_data['order_svc']['service_id'],
         "link": context.user_data['order_link'], "quantity": context.user_data['order_qty'],
-        "buy_charge": cost_usd, "status": "Pending", "UsedType": "NewOrder", "supplier_service_id": context.user_data['order_svc']['service_id']
+        "buy_charge": cost_usd, "status": "Pending", "UsedType": "NewOrder", 
+        "supplier_service_id": context.user_data['order_svc']['service_id']
     }
     supabase.table('WebsiteOrders').insert(o_data).execute()
     
     curr = user.get('currency', 'USD')
     bal_display = format_currency(new_bal, curr)
     await query.edit_message_text(get_text(lang, 'order_success', id=context.user_data['order_svc']['id'], bal=bal_display), parse_mode='Markdown')
-    await help_command(update, context)
+    await help_command(update, context) # Redirect
     return ConversationHandler.END
 
+# --- MASS ORDER ---
+
 async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 🔥 Fix: Use update.effective_user.id directly for get_user call inside condition check is cleaner
+    # But since we have helper, it's safer to just fetch ID
+    uid = update.effective_user.id
+    if not get_user(uid): return await update.message.reply_text("Login First.")
+    
     await update.message.reply_text("🚀 **Mass Order**\n`ID | Link | Qty`\n\nSend list:", parse_mode='Markdown')
     return WAITING_MASS_INPUT
 
@@ -409,7 +430,7 @@ async def mass_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             res = supabase.table('services').select("*").eq('id', sid).execute()
             if not res.data:
-                error_log += f"❌ Line {i}: ID {sid} Not Found\n"
+                error_log += f"❌ Line {i}: Service ID {sid} Not Found\n"
                 continue
             svc = res.data[0]
             if qty < svc['min'] or qty > svc['max']:
@@ -450,9 +471,10 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🚫 Canceled.")
         await help_command(update, context)
         return ConversationHandler.END
-        
+    
     user = get_user(update.effective_user.id)
     total_usd = context.user_data['mass_total']
+    
     if float(user['balance']) < total_usd:
         await query.edit_message_text("⚠️ Insufficient Balance.")
         return ConversationHandler.END
@@ -621,4 +643,5 @@ if __name__ == '__main__':
 
     print("Bot Running...")
     app.run_polling()
+
 
