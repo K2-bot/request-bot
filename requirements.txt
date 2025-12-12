@@ -1,6 +1,5 @@
 python-telegram-bot
+flask
 supabase
 python-dotenv
-flask
 requests
-gotrue
