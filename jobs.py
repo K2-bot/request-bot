@@ -5,7 +5,7 @@ from db import supabase
 from utils import parse_smm_support_response
 from datetime import datetime
 
-# 1. TRANSACTION POLLER
+# 1. TRANSACTION POLLER (Auto Top-up)
 def poll_transactions():
     processed_tx = set()
     while True:
@@ -23,16 +23,23 @@ def poll_transactions():
                             match = v; break
                 
                 if match:
-                    supabase.table("VerifyPayment").update({"status": "used"}).eq("transaction_id", tx['transaction_id']).execute()
                     user = supabase.table("users").select("balance").eq("email", tx['email']).execute().data
                     if user:
-                        new_bal = float(user[0]['balance']) + float(tx["amount"])
+                        old_bal = float(user[0]['balance'])
+                        amount = float(tx["amount"])
+                        new_bal = old_bal + amount
+                        
+                        supabase.table("VerifyPayment").update({"status": "used"}).eq("transaction_id", tx['transaction_id']).execute()
                         supabase.table("users").update({"balance": new_bal}).eq("email", tx['email']).execute()
                         supabase.table("transactions").update({"status": "Accepted"}).eq("id", tx_id).execute()
-                        requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": config.ADMIN_GROUP_ID, "text": f"✅ Auto Top-up: {tx['email']} (${tx['amount']})"})
+                        
+                        msg = f"✅ **Auto Top-up Success!**\n\n👤 `{tx['email']}`\n💵 `${amount}`\n💰 `${old_bal}` ➝ `${new_bal}`"
+                        requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": config.ADMIN_GROUP_ID, "text": msg, "parse_mode": "Markdown"})
                 else:
                     supabase.table("transactions").update({"status": "Processing"}).eq("id", tx_id).execute()
-                    requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": config.ADMIN_GROUP_ID, "text": f"⚠️ Manual Check: {tx_id} (${tx['amount']})\n/Yes {tx_id} | /No {tx_id}"})
+                    msg = f"🆕 **Unverified Transaction**\n\nID: `{tx_id}`\nUser: `{tx['email']}`\nAmount: `${tx['amount']}`\nTxID: `{tx['transaction_id']}`\n\n/Yes {tx_id} | /No {tx_id}"
+                    requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": config.ADMIN_GROUP_ID, "text": msg, "parse_mode": "Markdown"})
+                
                 processed_tx.add(tx_id)
         except Exception as e: print(f"Tx Poller: {e}")
         time.sleep(10)
@@ -95,8 +102,8 @@ def smmgen_status_batch_loop():
         try:
             all_smm = supabase.table("WebsiteOrders").select("supplier_order_id").eq("supplier_name","smmgen").not_.in_("status", ["Completed", "Canceled", "Refunded"]).not_.is_("supplier_order_id", None).execute().data or []
             s_ids = [str(o['supplier_order_id']) for o in all_smm if str(o['supplier_order_id']).isdigit()]
-            if not s_ids: 
-                time.sleep(60); continue
+            if not s_ids: time.sleep(60); continue
+            
             for i in range(0, len(s_ids), 100):
                 batch = ",".join(s_ids[i:i + 100])
                 try:
@@ -118,8 +125,7 @@ def poll_supportbox_worker():
         try:
             tickets = supabase.table("SupportBox").select("*").eq("status", "Pending").execute().data or []
             for t in tickets:
-                lid = t.get("order_id")
-                subject = t.get("subject")
+                lid = t.get("order_id"); subject = t.get("subject")
                 order = supabase.table("WebsiteOrders").select("supplier_order_id").eq("id", lid).execute().data
                 sup_id = order[0].get("supplier_order_id") if order else None
                 reply_text = ""
@@ -133,4 +139,32 @@ def poll_supportbox_worker():
                 supabase.table("SupportBox").update({"reply_text": reply_text, "status": "Replied"}).eq("id", t["id"]).execute()
         except: pass
         time.sleep(10)
-                  
+
+# 7. AUTO IMPORT SERVICES (All + Demo + Notify)
+def auto_import_services_loop():
+    while True:
+        try:
+            payload = {'key': config.SMM_API_KEY, 'action': 'services'}
+            res = requests.post(config.SMM_API_URL, data=payload, timeout=60).json()
+            existing = supabase.table("services").select("service_id").execute().data
+            existing_ids = [str(x['service_id']) for x in existing]
+            new_services = []
+            
+            for item in res:
+                s_id = str(item['service'])
+                if s_id not in existing_ids:
+                    buy_rate = float(item['rate'])
+                    sell_rate = buy_rate * 2.0 if buy_rate < 1.0 else buy_rate * 1.3
+                    new_services.append({
+                        "service_id": s_id, "service_name": item['name'], "category": item['category'],
+                        "type": "Demo", "min": int(item['min']), "max": int(item['max']),
+                        "buy_price": buy_rate, "sell_price": round(sell_rate, 4), "source": "smmgen", "per_quantity": 1000
+                    })
+            if new_services:
+                data = supabase.table("services").insert(new_services).execute()
+                if data.data:
+                    for s in data.data:
+                        requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", 
+                                      json={"chat_id": config.ADMIN_GROUP_ID, "text": f"🆕 New Service!\nID: `{s['id']}`\nName: {s['service_name']}", "parse_mode": "Markdown"})
+        except: pass
+        time.sleep(21600)
