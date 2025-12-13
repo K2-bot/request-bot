@@ -1,53 +1,28 @@
-import requests
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler
-import config
-from db import supabase, get_user
-from utils import get_text, format_currency, calculate_cost, format_for_user
+# ... (Imports) ...
 
-def notify_admin_group(text):
-    try: requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": config.ADMIN_GROUP_ID, "text": text, "parse_mode": "Markdown"}, timeout=10)
+# 1. /Topup (Manual) -> Send to Affiliate Group
+async def admin_manual_topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != config.AFFILIATE_GROUP_ID: return # Restrict to Affiliate Group
+    try:
+        # ... (Same logic) ...
+        # Notify
+        msg = f"✅ **Manual Topup**\nUser: `{email}`\nAdded: `${amount}`"
+        requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", 
+                      json={"chat_id": config.AFFILIATE_GROUP_ID, "text": msg, "parse_mode": "Markdown"})
     except: pass
 
-# --- AUTH & DASHBOARD ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    db_user = get_user(user.id)
-    args = context.args
-    if update.effective_chat.type != 'private':
-        if not db_user:
-            bot_username = (await context.bot.get_me()).username
-            kb = [[InlineKeyboardButton("🔐 Login in Private", url=f"https://t.me/{bot_username}?start=login")]]
-            return await update.message.reply_text("⚠️ Login first in Private Chat.", reply_markup=InlineKeyboardMarkup(kb))
-        if not args: return await update.message.reply_text(f"👋 {user.first_name}! Ready.")
-    
-    if args and args[0].startswith("order_"):
-        local_id = args[0].split("_")[1]
-        if not db_user:
-            context.user_data['pending_order_id'] = local_id
-            kb = [[InlineKeyboardButton("🔐 Login", callback_data="login_flow")]]
-            return await update.message.reply_text(f"⚠️ Login required for ID: {local_id}", reply_markup=InlineKeyboardMarkup(kb))
-        context.user_data['deep_link_id'] = local_id
-        await new_order_start(update, context); return
+# 2. /Yes (Approve) -> Send to Affiliate Group
+async def admin_tx_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != config.AFFILIATE_GROUP_ID: return
+    try:
+        # ... (Same logic) ...
+        msg = f"✅ **Transaction Approved**\nUser: `{tx[0]['email']}`"
+        requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", 
+                      json={"chat_id": config.AFFILIATE_GROUP_ID, "text": msg, "parse_mode": "Markdown"})
+    except: pass
 
-    if not db_user:
-        kb = [[InlineKeyboardButton("🔐 Login", callback_data="login_flow")], [InlineKeyboardButton("📝 Register", url="https://k2boost.org/createaccount")]]
-        return await update.message.reply_text(f"Welcome {user.first_name}!\nPlease Login.", reply_markup=InlineKeyboardMarkup(kb))
-    await help_command(update, context)
+# 3. /post -> Send to Channel
+# (Already using config.CHANNEL_ID correctly in previous code)
 
-# --- LOGIN FLOW ---
-async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text("📧 Enter Email:")
-    return config.WAITING_EMAIL
-
-async def receive_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['login_email'] = update.message.text.strip().lower()
-    await update.message.reply_text("🔑 Enter Password:")
-    return config.WAITING_PASSWORD
-
-async def receive_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    email = context.user_data.get('login_email')
-    password = update.message.text.strip()
-    try: await update.
+# 4. /Change /swap -> Restrict to Supplier or Report Group if needed
+# (Assuming Admin can do this from any admin group, usually Supplier Group)
