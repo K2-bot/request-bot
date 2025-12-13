@@ -66,4 +66,3 @@ def parse_smm_support_response(api_response, req_type, local_id):
         elif 'cannot be canceled' in text: return "❌ Cannot Cancel."
         return f"⚠️ {api_response}"
     return "✅ Sent."
-             
