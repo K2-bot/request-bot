@@ -13,7 +13,7 @@ def send_log(chat_id, text):
         )
     except: pass
 
-# 1. TRANSACTION POLLER -> (Affiliate & Transactions Group)
+# 1. TRANSACTION POLLER -> (Affiliate Group)
 def poll_transactions():
     processed_tx = set()
     while True:
@@ -40,12 +40,10 @@ def poll_transactions():
                         supabase.table("users").update({"balance": new_bal}).eq("email", tx['email']).execute()
                         supabase.table("transactions").update({"status": "Accepted"}).eq("id", tx_id).execute()
                         
-                        # 🔥 Send to Affiliate Group
                         msg = f"✅ **Auto Top-up Success!**\n👤 `{tx['email']}`\n💵 `${tx['amount']}`\n💰 `${old_bal}` ➝ `${new_bal}`"
                         send_log(config.AFFILIATE_GROUP_ID, msg)
                 else:
                     supabase.table("transactions").update({"status": "Processing"}).eq("id", tx_id).execute()
-                    # 🔥 Send to Affiliate Group (Manual Check)
                     msg = f"🆕 **Unverified Transaction**\nID: `{tx_id}`\nUser: `{tx['email']}`\nAmount: `${tx['amount']}`\n/Yes {tx_id} | /No {tx_id}"
                     send_log(config.AFFILIATE_GROUP_ID, msg)
                 
@@ -53,7 +51,7 @@ def poll_transactions():
         except Exception as e: print(f"Tx Poller: {e}")
         time.sleep(10)
 
-# 2. AFFILIATE POLLER -> (Affiliate & Transactions Group)
+# 2. AFFILIATE POLLER -> (Affiliate Group)
 def poll_affiliate():
     processed_aff = set()
     while True:
@@ -63,17 +61,14 @@ def poll_affiliate():
                 rid = req['id']
                 if rid in processed_aff: continue
                 supabase.table("affiliate").update({"status": "Processing"}).eq("id", rid).execute()
-                
-                # 🔥 Send to Affiliate Group
                 msg = f"💸 **Affiliate Payout**\nUser: `{req['email']}`\nAmount: `${req['amount']}`\n/Accept {rid}"
                 send_log(config.AFFILIATE_GROUP_ID, msg)
                 processed_aff.add(rid)
         except: pass
         time.sleep(10)
 
-# 3. RATE CHECKER (No Log needed usually)
+# 3. RATE CHECKER
 def check_smmgen_rates_loop():
-    # ... (Same as before) ...
     while True:
         try:
             payload = {'key': config.SMM_API_KEY, 'action': 'services'}
@@ -88,7 +83,7 @@ def check_smmgen_rates_loop():
         except: pass
         time.sleep(3600)
 
-# 4. ORDER PROCESSOR -> (Supplier Orders Group)
+# 4. ORDER PROCESSOR -> (Supplier Group / Order Log)
 def process_pending_orders_loop():
     while True:
         try:
@@ -101,78 +96,97 @@ def process_pending_orders_loop():
                     if 'order' in res:
                         sup_id = str(res['order'])
                         supabase.table("WebsiteOrders").update({"status": "Processing", "supplier_order_id": sup_id}).eq("id", o["id"]).execute()
-                        
-                        # 🔥 Send to Supplier Orders Group
-                        msg = f"🚀 **New Order Sent to SMMGEN**\n🆔 Local: `{o['id']}`\n🔢 Supplier ID: `{sup_id}`\n🔗 Service: `{o['supplier_service_id']}`"
+                        msg = f"🚀 **Order Sent to SMMGEN**\n🆔 Local: `{o['id']}`\n🔢 Supplier ID: `{sup_id}`"
                         send_log(config.SUPPLIER_GROUP_ID, msg)
-                        
                     elif 'error' in res:
                         user = supabase.table('users').select("balance").eq("email", o['email']).execute().data[0]
                         new_bal = float(user['balance']) + float(o['buy_charge'])
                         supabase.table('users').update({'balance': new_bal}).eq("email", o['email']).execute()
                         supabase.table("WebsiteOrders").update({"status": "Canceled"}).eq("id", o["id"]).execute()
-                        
-                        # 🔥 Send to Order Log Group (Error)
                         msg = f"❌ **Order Failed & Refunded**\n🆔 `{o['id']}`\n⚠️ Error: {res['error']}"
                         send_log(config.ORDER_LOG_GROUP_ID, msg)
                 except: pass
         except: pass
         time.sleep(5)
 
-# 5. STATUS & SUPPORT -> (Order Log & Support Group)
+# 5. STATUS & SUPPORT -> (Order Log / Support Group)
 def poll_supportbox_worker():
     while True:
         try:
             tickets = supabase.table("SupportBox").select("*").eq("status", "Pending").execute().data or []
             for t in tickets:
-                lid = t.get("order_id")
-                subject = t.get("subject")
-                
-                # 🔥 Send to Support Group
+                lid = t.get("order_id"); subject = t.get("subject")
                 send_log(config.SUPPORT_GROUP_ID, f"📩 **New Ticket**\nID: `{lid}`\nSubject: {subject}")
-                
                 order = supabase.table("WebsiteOrders").select("supplier_order_id").eq("id", lid).execute().data
                 sup_id = order[0].get("supplier_order_id") if order else None
                 reply_text = ""
-                
                 if subject in ["Refill", "Cancel"] and sup_id:
                     action = 'refill' if subject == 'Refill' else 'cancel'
                     try:
                         res = requests.post(config.SMM_API_URL, data={'key': config.SMM_API_KEY, 'action': action, 'order': sup_id}, timeout=10).json()
-                        reply_text = str(res) # Simplified
+                        reply_text = str(res)
                     except: reply_text = "Error"
                 else: reply_text = "Manual Check Needed"
-                
                 supabase.table("SupportBox").update({"reply_text": reply_text, "status": "Replied"}).eq("id", t["id"]).execute()
         except: pass
         time.sleep(10)
 
 def smmgen_status_batch_loop():
-    # ... (Same logic, mostly silent updates) ...
-    # If order is canceled, you can log to ORDER_LOG_GROUP_ID
      while True:
         try:
-            # ... (fetch logic) ...
-            # ... (api call) ...
+            all_smm = supabase.table("WebsiteOrders").select("supplier_order_id").eq("supplier_name","smmgen").not_.in_("status", ["Completed", "Canceled", "Refunded"]).not_.is_("supplier_order_id", None).execute().data or []
+            s_ids = [str(o['supplier_order_id']) for o in all_smm if str(o['supplier_order_id']).isdigit()]
+            if not s_ids: time.sleep(60); continue
+            
+            for i in range(0, len(s_ids), 100):
+                batch = ",".join(s_ids[i:i + 100])
+                try:
+                    res = requests.post(config.SMM_API_URL, data={"key": config.SMM_API_KEY, "action": "status", "orders": batch}, timeout=30).json()
                     for sup_id, info in res.items():
                         if isinstance(info, dict) and "status" in info:
                             new_status = info["status"]
-                            # Only update if changed (simplified logic for brevity)
-                            supabase.table("WebsiteOrders").update({"status": new_status}).eq("supplier_order_id", sup_id).execute()
-                            
-                            # 🔥 Log Cancels to Order Group
-                            if new_status == "Canceled":
-                                send_log(config.ORDER_LOG_GROUP_ID, f"❌ **Order {sup_id} marked as Canceled**")
+                            current_data = supabase.table("WebsiteOrders").select("status").eq("supplier_order_id", sup_id).execute().data
+                            if current_data and current_data[0]['status'] != new_status:
+                                supabase.table("WebsiteOrders").update({"status": new_status}).eq("supplier_order_id", sup_id).execute()
+                                if new_status == "Canceled":
+                                    send_log(config.ORDER_LOG_GROUP_ID, f"❌ **Order {sup_id} marked as Canceled**")
+                    time.sleep(2)
+                except: pass
         except: pass
         time.sleep(60)
 
+# 6. AUTO IMPORT (Type=Demo, Pricing Logic, Notify Report Group)
 def auto_import_services_loop():
-    # ... (Same fetch logic) ...
+    while True:
+        try:
+            payload = {'key': config.SMM_API_KEY, 'action': 'services'}
+            res = requests.post(config.SMM_API_URL, data=payload, timeout=60).json()
+            existing = supabase.table("services").select("service_id").execute().data
+            existing_ids = [str(x['service_id']) for x in existing]
+            new_services = []
+            
+            for item in res:
+                s_id = str(item['service'])
+                if s_id not in existing_ids:
+                    buy_rate = float(item['rate'])
+                    name_lower = item['name'].lower()
+                    
+                    # 🔥 Pricing Logic
+                    if 'view' in name_lower: # View means 3x
+                        sell_rate = buy_rate * 3.0
+                    else: # Normal 40%
+                        sell_rate = buy_rate * 1.4
+                        
+                    new_services.append({
+                        "service_id": s_id, "service_name": item['name'], "category": item['category'],
+                        "type": "Demo", "min": int(item['min']), "max": int(item['max']),
+                        "buy_price": buy_rate, "sell_price": round(sell_rate, 4), "source": "smmgen", "per_quantity": 1000
+                    })
             if new_services:
                 data = supabase.table("services").insert(new_services).execute()
                 if data.data:
                     for s in data.data:
-                        # 🔥 Send to Report Group or Supplier Group
-                        msg = f"🆕 **New Service**\nID: `{s['id']}`\nName: {s['service_name']}"
+                        msg = f"🆕 **New Service Imported**\nID: `{s['id']}`\nType: Demo\nPrice: `${s['sell_price']}`"
                         send_log(config.REPORT_GROUP_ID, msg)
-    # ...
+        except: pass
+        time.sleep(21600)
