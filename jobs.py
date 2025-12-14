@@ -298,8 +298,6 @@ def poll_affiliate():
         except: pass
         time.sleep(10)
 
-# 5. SUPPORT POLLER
-5. SUPPORT POLLER (Fixed API Logic)
 def poll_supportbox_worker():
     while True:
         try:
