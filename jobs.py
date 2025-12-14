@@ -9,7 +9,7 @@ def send_log(chat_id, text):
     try: requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
     except: pass
 
-# 1. TRANSACTION POLLER -> Affiliate Group
+# 1. TRANSACTION POLLER (balance -> balance_usd)
 def poll_transactions():
     processed_tx = set()
     while True:
@@ -24,11 +24,12 @@ def poll_transactions():
                     for v in verify:
                         if abs(float(v["amount_usd"]) - float(tx["amount"])) < 0.01: match = v; break
                 if match:
-                    user = supabase.table("users").select("balance").eq("email", tx['email']).execute().data
+                    # 🔥 FIXED: balance_usd
+                    user = supabase.table("users").select("balance_usd").eq("email", tx['email']).execute().data
                     if user:
-                        old = float(user[0]['balance']); new = old + float(tx["amount"])
+                        old = float(user[0]['balance_usd']); new = old + float(tx["amount"])
                         supabase.table("VerifyPayment").update({"status": "used"}).eq("transaction_id", tx['transaction_id']).execute()
-                        supabase.table("users").update({"balance": new}).eq("email", tx['email']).execute()
+                        supabase.table("users").update({"balance_usd": new}).eq("email", tx['email']).execute()
                         supabase.table("transactions").update({"status": "Accepted"}).eq("id", tx_id).execute()
                         send_log(config.AFFILIATE_GROUP_ID, f"✅ **Auto Top-up Success!**\n👤 `{tx['email']}`\n💵 `${tx['amount']}`\n💰 `${old}` ➝ `${new}`")
                 else:
@@ -38,7 +39,7 @@ def poll_transactions():
         except: pass
         time.sleep(10)
 
-# 2. AFFILIATE POLLER -> Affiliate Group
+# 2. AFFILIATE POLLER
 def poll_affiliate():
     processed_aff = set()
     while True:
@@ -53,7 +54,7 @@ def poll_affiliate():
         except: pass
         time.sleep(10)
 
-# 3. RATE CHECKER -> Report Group
+# 3. RATE CHECKER
 def check_smmgen_rates_loop():
     while True:
         try:
@@ -70,7 +71,7 @@ def check_smmgen_rates_loop():
         except: pass
         time.sleep(3600)
 
-# 4. ORDER PROCESSOR -> Supplier / K2Boost
+# 4. ORDER PROCESSOR (Refund Logic Fixed: balance_usd)
 def process_pending_orders_loop():
     while True:
         try:
@@ -85,16 +86,17 @@ def process_pending_orders_loop():
                         supabase.table("WebsiteOrders").update({"status": "Processing", "supplier_order_id": sup_id}).eq("id", o["id"]).execute()
                         send_log(config.SUPPLIER_GROUP_ID, f"🚀 **Sent to SMMGEN**\n🆔 Local: `{o['id']}`\n🔢 SupID: `{sup_id}`")
                     elif 'error' in res:
-                        user = supabase.table('users').select("balance").eq("email", o['email']).execute().data[0]
-                        new_bal = float(user['balance']) + float(o['buy_charge'])
-                        supabase.table('users').update({'balance': new_bal}).eq("email", o['email']).execute()
+                        # 🔥 FIXED: balance_usd
+                        user = supabase.table('users').select("balance_usd").eq("email", o['email']).execute().data[0]
+                        new_bal = float(user['balance_usd']) + float(o['buy_charge'])
+                        supabase.table('users').update({'balance_usd': new_bal}).eq("email", o['email']).execute()
                         supabase.table("WebsiteOrders").update({"status": "Canceled"}).eq("id", o["id"]).execute()
                         send_log(config.K2BOOST_GROUP_ID, f"❌ **Failed & Refunded**\n🆔 `{o['id']}`\n⚠️ {res['error']}\n\n/Done {o['id']} | /Error {o['id']}")
                 except: pass
         except: pass
         time.sleep(5)
 
-# 5. STATUS BATCH -> K2Boost (Cancels)
+# 5. STATUS BATCH (Refund Logic Fixed: balance_usd)
 def smmgen_status_batch_loop():
     while True:
         try:
@@ -117,7 +119,7 @@ def smmgen_status_batch_loop():
         except: pass
         time.sleep(60)
 
-# 6. SUPPORT POLLER -> Support Group (Auto Report)
+# 6. SUPPORT POLLER
 def poll_supportbox_worker():
     while True:
         try:
@@ -129,7 +131,6 @@ def poll_supportbox_worker():
                 if order_res:
                     sup_id = order_res[0].get("supplier_order_id"); order_status = order_res[0].get("status")
 
-                # Auto Check Logic
                 is_auto = False; reply_text = ""
                 if order_status in ["Canceled", "Refunded", "Fail"]:
                     reply_text = f"❌ Request Rejected. Order is already {order_status}."; is_auto = True
@@ -143,17 +144,15 @@ def poll_supportbox_worker():
                 else: reply_text = "Waiting for Admin..."; is_auto = False
 
                 if is_auto:
-                    # ✅ Auto Success -> Send to Group & Close
                     send_log(config.SUPPORT_GROUP_ID, f"✅ **Auto Completed Report**\nTicket: `{t['id']}`\nOrder: `{lid}`\nAction: {subject}\nResult: {reply_text}")
                     supabase.table("SupportBox").update({"reply_text": reply_text, "status": "Replied", "updated_at": datetime.now().isoformat()}).eq("id", t['id']).execute()
                 else:
-                    # ⚠️ Manual -> Send to Group (Stay Pending)
                     send_log(config.SUPPORT_GROUP_ID, f"📩 **New Ticket**\nTicket: `{t['id']}`\nOrder: `{lid}`\nSub: `{subject}`\nStat: `{order_status}`\n\n⚠️ **Manual Action Needed:**\n`/Reply {t['id']} YourMessage`")
                     supabase.table("SupportBox").update({"status": "Processing"}).eq("id", t['id']).execute()
         except: pass
         time.sleep(10)
 
-# 7. AUTO IMPORT -> Report Group
+# 7. AUTO IMPORT
 def auto_import_services_loop():
     while True:
         try:
