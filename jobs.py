@@ -134,7 +134,7 @@ def process_pending_orders_loop():
 def smmgen_status_batch_loop():
     while True:
         try:
-            all_smm = supabase.table("WebsiteOrders").select("*").eq("supplier_name","smmgen").not_.in_("status", ["Completed", "Canceled", "Refunded"]).not_.is_("supplier_order_id", None).execute().data or []
+            all_smm = supabase.table("WebsiteOrders").select("*").eq("supplier_name","smmgen").not_.in_("status", ["Completed", "Canceled", "Refunded", "Partial"]).not_.is_("supplier_order_id", None).execute().data or []
             s_ids = [str(o['supplier_order_id']) for o in all_smm if str(o['supplier_order_id']).isdigit()]
             
             if not s_ids: time.sleep(60); continue
@@ -152,46 +152,54 @@ def smmgen_status_batch_loop():
                                 remains = int(info.get('remains', 0))
                                 supabase.table("WebsiteOrders").update({"status": new_s, "remain": remains}).eq("supplier_order_id", sup_id).execute()
                                 
-                                # Report Message
-                                done_qty = int(local_order['quantity']) - remains
-                                refund = 0.0
-                                spend = float(local_order['sell_charge'])
-                                
-                                # Refund Logic
+                                # --- SCENARIO A: REFUND (Canceled/Partial) ---
                                 if new_s in ["Canceled", "Partial"]:
+                                    refund = 0.0
+                                    spend = float(local_order['sell_charge'])
                                     qty = int(local_order['quantity'])
+                                    
                                     if qty > 0:
-                                        refund = (spend / qty) * remains
-                                        spend = spend - refund
-                                        # Refund Balance
+                                        refund = (spend / qty) * remains # Calculate Refund
+                                        spend = spend - refund # Adjusted Spend
+                                        
+                                        # Update Balance
                                         user = supabase.table('users').select("balance_usd").eq("email", local_order['email']).execute().data
                                         if user:
                                             new_bal = float(user[0]['balance_usd']) + refund
                                             supabase.table('users').update({'balance_usd': new_bal}).eq("email", local_order['email']).execute()
-                                            # Mark Refunded amount in DB
                                             supabase.table("WebsiteOrders").update({"refund_amount": refund, "status": "Refunded" if new_s=="Canceled" else "Partial"}).eq("supplier_order_id", sup_id).execute()
 
-                                msg = (
-                                    f"📦 ✅ <b>{new_s} Order</b>\n"
-                                    f"🧾 Order ID: {local_order['id']}\n"
-                                    f"🧩 Service: {html.escape(local_order.get('service',''))}\n"
-                                    f"👤 User: {local_order['email']}\n"
-                                    f"📊 Quantity: {local_order['quantity']}\n"
-                                    f"⏳ Remain: {remains}\n"
-                                    f"✅ Done Qty: {done_qty}\n"
-                                    f"💰 Amount: ${local_order['sell_charge']}\n"
-                                    f"💸 Refund: ${refund:.4f}\n"
-                                    f"📈 Spend Added: ${spend:.4f}\n"
-                                    f"🔄 New Status: {new_s}\n"
-                                    f"🕒 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                                )
-                                send_log_retry(config.SUPPLIER_GROUP_ID, msg)
+                                    # Send Detailed Box Message
+                                    msg = (
+                                        f"📦 💸 <b>{new_s} Order (Refunded)</b>\n"
+                                        f"🧾 Order ID: {local_order['id']}\n"
+                                        f"🧩 Service: {html.escape(local_order.get('service',''))}\n"
+                                        f"👤 User: {local_order['email']}\n"
+                                        f"📊 Quantity: {qty}\n"
+                                        f"⏳ Remain: {remains}\n"
+                                        f"💰 Original: ${local_order['sell_charge']}\n"
+                                        f"💸 Refund: ${refund:.4f}\n"
+                                        f"🔄 Status: {new_s}\n"
+                                        f"🕒 Time: {datetime.now().strftime('%H:%M:%S')}"
+                                    )
+                                    send_log_retry(config.SUPPLIER_GROUP_ID, msg)
+
+                                # --- SCENARIO B: NORMAL UPDATE (Completed/In Progress) ---
+                                else:
+                                    # Send Simple Message (No Refund Info)
+                                    simple_msg = (
+                                        f"✅ <b>Order #{sup_id} Status Changed</b>\n"
+                                        f"🆔 Local ID: {local_order['id']}\n"
+                                        f"🕒 Old: {local_order['status']}\n"
+                                        f"🚀 New: <b>{new_s}</b>"
+                                    )
+                                    send_log_retry(config.SUPPLIER_GROUP_ID, simple_msg)
 
                 except: pass
                 time.sleep(2)
         except: pass
         time.sleep(60)
-
+        
 # 3. TRANSACTION POLLER
 def poll_transactions():
     processed_tx = set()
@@ -291,6 +299,7 @@ def poll_affiliate():
         time.sleep(10)
 
 # 5. SUPPORT POLLER
+5. SUPPORT POLLER (Fixed API Logic)
 def poll_supportbox_worker():
     while True:
         try:
@@ -298,25 +307,57 @@ def poll_supportbox_worker():
             for t in tickets:
                 lid = t.get("order_id"); subject = t.get("subject")
                 
-                # ... (Auto Check Logic - same as before) ...
-                # (For brevity, skipping the auto-check code here, just updating formatting)
+                # Check Order
+                order_res = supabase.table("WebsiteOrders").select("supplier_order_id, status").eq("id", lid).execute().data
+                sup_id = None; order_status = "Unknown"
+                if order_res:
+                    sup_id = order_res[0].get("supplier_order_id"); order_status = order_res[0].get("status")
+
+                is_auto = False; reply_text = ""
                 
-                msg = (
-                    f"📢 <b>New Support Ticket</b>\n"
-                    f"ID - {t['id']}\n"
-                    f"Email - {t['email']}\n"
-                    f"Subject - {html.escape(subject)}\n"
-                    f"Order ID - {lid}\n\n"
-                    f"Message:\n{html.escape(t.get('message', 'No message'))}\n\n"
-                    f"Commands:\n"
-                    f"/Answer {t['id']} reply message\n"
-                    f"/Close {t['id']}"
-                )
-                send_log_retry(config.SUPPORT_GROUP_ID, msg)
-                supabase.table("SupportBox").update({"status": "Processing"}).eq("id", t['id']).execute()
+                # 🤖 Auto API Check
+                if subject in ["Refill", "Cancel"] and sup_id and sup_id != "0":
+                    action = 'refill' if subject == 'Refill' else 'cancel'
+                    try:
+                        # Send to SMMGen API
+                        res = requests.post(config.SMM_API_URL, data={'key': config.SMM_API_KEY, 'action': action, 'order': sup_id}, timeout=10).json()
+                        
+                        if 'error' in res: 
+                            reply_text = f"⚠️ API Error: {res['error']}"
+                            is_auto = False # Admin needs to see this
+                        else: 
+                            reply_text = parse_smm_support_response(res, subject, lid)
+                            is_auto = True
+                    except Exception as e:
+                        reply_text = f"⚠️ Connection Error: {str(e)}"
+                        is_auto = False
+                
+                elif order_status in ["Canceled", "Refunded", "Fail"]:
+                    reply_text = f"❌ Order is {order_status}. Request Rejected."; is_auto = True
+                else:
+                    reply_text = ""; is_auto = False # Manual Check needed
+
+                # Notification
+                if is_auto:
+                    # Auto Reply & Close
+                    supabase.table("SupportBox").update({"reply_text": reply_text, "status": "Replied", "updated_at": datetime.now().isoformat()}).eq("id", t['id']).execute()
+                    send_log_retry(config.SUPPORT_GROUP_ID, f"✅ <b>Auto Support:</b> Ticket #{t['id']}\nAction: {subject}\nResult: {reply_text}")
+                else:
+                    # Notify Admin
+                    msg = (
+                        f"📢 <b>New Support Ticket</b>\n"
+                        f"ID - {t['id']}\n"
+                        f"Email - {t['email']}\n"
+                        f"Subject - {html.escape(subject)}\n"
+                        f"Order ID - {lid}\n\n"
+                        f"Commands:\n"
+                        f"/Answer {t['id']} message\n"
+                        f"/Close {t['id']}"
+                    )
+                    send_log_retry(config.SUPPORT_GROUP_ID, msg)
+                    supabase.table("SupportBox").update({"status": "Processing"}).eq("id", t['id']).execute()
         except: pass
         time.sleep(10)
-
 # 6. RATE CHECKER (Standard)
 def check_smmgen_rates_loop():
     while True:
