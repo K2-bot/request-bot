@@ -1,102 +1,110 @@
 import time
 import requests
 import config
+import json
+import html # For escaping HTML
 from db import supabase
 from utils import parse_smm_support_response
 from datetime import datetime
 
+# 🔥 IMPROVED: Error Logging & HTML Mode (Prevents Markdown Errors)
 def send_log(chat_id, text):
-    try: requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
-    except: pass
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", 
+            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"} # Changed to HTML
+        )
+    except Exception as e:
+        print(f"⚠️ Send Log Error: {e}")
 
-# 1. TRANSACTION POLLER (balance -> balance_usd)
-def poll_transactions():
-    processed_tx = set()
-    while True:
-        try:
-            txs = supabase.table("transactions").select("*").eq("status", "Pending").execute().data or []
-            for tx in txs:
-                tx_id = tx['id']
-                if tx_id in processed_tx: continue
-                verify = supabase.table("VerifyPayment").select("*").eq("transaction_id", tx['transaction_id']).eq("status", "unused").execute().data
-                match = None
-                if verify:
-                    for v in verify:
-                        if abs(float(v["amount_usd"]) - float(tx["amount"])) < 0.01: match = v; break
-                if match:
-                    # 🔥 FIXED: balance_usd
-                    user = supabase.table("users").select("balance_usd").eq("email", tx['email']).execute().data
-                    if user:
-                        old = float(user[0]['balance_usd']); new = old + float(tx["amount"])
-                        supabase.table("VerifyPayment").update({"status": "used"}).eq("transaction_id", tx['transaction_id']).execute()
-                        supabase.table("users").update({"balance_usd": new}).eq("email", tx['email']).execute()
-                        supabase.table("transactions").update({"status": "Accepted"}).eq("id", tx_id).execute()
-                        send_log(config.AFFILIATE_GROUP_ID, f"✅ **Auto Top-up Success!**\n👤 `{tx['email']}`\n💵 `${tx['amount']}`\n💰 `${old}` ➝ `${new}`")
-                else:
-                    supabase.table("transactions").update({"status": "Processing"}).eq("id", tx_id).execute()
-                    send_log(config.AFFILIATE_GROUP_ID, f"🆕 **Unverified Tx**\nID: `{tx_id}`\nUser: `{tx['email']}`\nAmt: `${tx['amount']}`\n/Yes {tx_id} | /No {tx_id}")
-                processed_tx.add(tx_id)
-        except: pass
-        time.sleep(10)
-
-# 2. AFFILIATE POLLER
-def poll_affiliate():
-    processed_aff = set()
-    while True:
-        try:
-            reqs = supabase.table("affiliate").select("*").eq("status", "Pending").execute().data or []
-            for req in reqs:
-                rid = req['id']
-                if rid in processed_aff: continue
-                supabase.table("affiliate").update({"status": "Processing"}).eq("id", rid).execute()
-                send_log(config.AFFILIATE_GROUP_ID, f"💸 **Affiliate Payout**\nUser: `{req['email']}`\nAmount: `${req['amount']}`\n/Accept {rid}")
-                processed_aff.add(rid)
-        except: pass
-        time.sleep(10)
-
-# 3. RATE CHECKER
-def check_smmgen_rates_loop():
-    while True:
-        try:
-            payload = {'key': config.SMM_API_KEY, 'action': 'services'}
-            res = requests.post(config.SMM_API_URL, data=payload, timeout=30).json()
-            local = supabase.table("services").select("id, service_id, buy_price, service_name").execute().data or []
-            for ls in local:
-                api_svc = next((s for s in res if str(s['service']) == str(ls['service_id'])), None)
-                if api_svc:
-                    api_rate = float(api_svc['rate']); old_rate = float(ls['buy_price'])
-                    if abs(old_rate - api_rate) > 0.0001:
-                        supabase.table("services").update({"buy_price": api_rate}).eq("id", ls['id']).execute()
-                        send_log(config.REPORT_GROUP_ID, f"📉📈 **Price Changed**\n🆔 `{ls['id']}`\n📦 {ls['service_name']}\n💰 `${old_rate}` ➝ `${api_rate}`")
-        except: pass
-        time.sleep(3600)
-
-# 4. ORDER PROCESSOR (Refund Logic Fixed: balance_usd)
+# 1. ORDER PROCESSOR (Fixed Logic for '0' ID)
 def process_pending_orders_loop():
     while True:
         try:
-            orders = supabase.table("WebsiteOrders").select("*").eq("status", "Pending").eq("supplier_name", "smmgen").execute().data or []
+            # Fetch Pending Orders
+            orders = supabase.table("WebsiteOrders").select("*").eq("status", "Pending").execute().data or []
+            
             for o in orders:
-                if o.get("supplier_order_id"): continue
-                payload = {'key': config.SMM_API_KEY, 'action': 'add', 'service': o['supplier_service_id'], 'link': o['link'], 'quantity': o['quantity']}
-                try:
-                    res = requests.post(config.SMM_API_URL, data=payload, timeout=20).json()
-                    if 'order' in res:
-                        sup_id = str(res['order'])
-                        supabase.table("WebsiteOrders").update({"status": "Processing", "supplier_order_id": sup_id}).eq("id", o["id"]).execute()
-                        send_log(config.SUPPLIER_GROUP_ID, f"🚀 **Sent to SMMGEN**\n🆔 Local: `{o['id']}`\n🔢 SupID: `{sup_id}`")
-                    elif 'error' in res:
-                        # 🔥 FIXED: balance_usd
-                        user = supabase.table('users').select("balance_usd").eq("email", o['email']).execute().data[0]
-                        new_bal = float(user['balance_usd']) + float(o['buy_charge'])
-                        supabase.table('users').update({'balance_usd': new_bal}).eq("email", o['email']).execute()
-                        supabase.table("WebsiteOrders").update({"status": "Canceled"}).eq("id", o["id"]).execute()
-                        send_log(config.K2BOOST_GROUP_ID, f"❌ **Failed & Refunded**\n🆔 `{o['id']}`\n⚠️ {res['error']}\n\n/Done {o['id']} | /Error {o['id']}")
-                except: pass
-        except: pass
+                # 🛑 CRITICAL FIX: Only skip if ID exists AND is NOT '0'
+                # အရင်က '0' ဖြစ်နေရင် ကျော်သွားလို့ အခု ပြန်ပြင်ထားပါတယ်
+                sup_oid = str(o.get("supplier_order_id") or "")
+                
+                # ID ရှိပြီး "0" မဟုတ်မှသာ ကျော်မယ် (ဆိုလိုတာက "0" ဆိုရင် ဆက်လုပ်မယ်)
+                if sup_oid and sup_oid != "0": 
+                    continue
+                
+                supplier = (o.get("supplier_name") or "").lower()
+                
+                # --- A. SMMGEN ORDER ---
+                if supplier == "smmgen":
+                    payload = {
+                        'key': config.SMM_API_KEY, 
+                        'action': 'add', 
+                        'service': o['supplier_service_id'], 
+                        'link': o['link'], 
+                        'quantity': o['quantity']
+                    }
+                    try:
+                        res = requests.post(config.SMM_API_URL, data=payload, timeout=30).json()
+                        
+                        # ✅ Success Case
+                        if 'order' in res:
+                            sup_id = str(res['order'])
+                            supabase.table("WebsiteOrders").update({
+                                "status": "Processing", 
+                                "supplier_order_id": sup_id
+                            }).eq("id", o["id"]).execute()
+                            
+                            # Log to Supplier Group
+                            msg = (f"🚀 <b>Order Sent to SMMGEN</b>\n"
+                                   f"🆔 Local: <code>{o['id']}</code>\n"
+                                   f"🔢 SupID: <code>{sup_id}</code>\n"
+                                   f"🔗 Service: {html.escape(o.get('service', ''))}")
+                            send_log(config.SUPPLIER_GROUP_ID, msg)
+                        
+                        # ❌ Error Case (Refund)
+                        elif 'error' in res:
+                            # User Balance Refund (balance_usd)
+                            user = supabase.table('users').select("balance_usd").eq("email", o['email']).execute().data
+                            if user:
+                                refund = float(o['sell_charge'])
+                                new_bal = float(user[0]['balance_usd']) + refund
+                                supabase.table('users').update({'balance_usd': new_bal}).eq("email", o['email']).execute()
+                            
+                            supabase.table("WebsiteOrders").update({"status": "Canceled"}).eq("id", o["id"]).execute()
+                            
+                            msg = (f"❌ <b>Order Failed & Refunded</b>\n"
+                                   f"🆔 ID: <code>{o['id']}</code>\n"
+                                   f"⚠️ Error: {res['error']}")
+                            send_log(config.K2BOOST_GROUP_ID, msg)
+                    except Exception as e:
+                        print(f"SMM API Error: {e}")
+
+                # --- B. K2BOOST MANUAL ORDER ---
+                elif supplier == "k2boost":
+                    # Update to Processing
+                    supabase.table("WebsiteOrders").update({"status": "Processing"}).eq("id", o["id"]).execute()
+                    
+                    # Notify Admin
+                    msg = (
+                        f"⚡️ <b>New Manual Order</b>\n"
+                        f"🆔 ID: <code>{o['id']}</code>\n"
+                        f"📧 User: {o.get('email')}\n"
+                        f"📦 Service: {html.escape(o.get('service', ''))}\n"
+                        f"🔗 Link: <code>{html.escape(o.get('link', ''))}</code>\n"
+                        f"🔢 Qty: {o.get('quantity')}\n\n"
+                        f"👇 <b>Admin Actions:</b>\n"
+                        f"/Done {o['id']} (Complete)\n"
+                        f"/Error {o['id']} (Refund)"
+                    )
+                    send_log(config.K2BOOST_GROUP_ID, msg)
+
+        except Exception as e:
+            print(f"Order Loop Error: {e}")
+        
         time.sleep(5)
 
-# 5. STATUS BATCH (Refund Logic Fixed: balance_usd)
+# 2. STATUS BATCH
 def smmgen_status_batch_loop():
     while True:
         try:
@@ -118,6 +126,67 @@ def smmgen_status_batch_loop():
                 except: pass
         except: pass
         time.sleep(60)
+
+# 3. TRANSACTION POLLER
+def poll_transactions():
+    processed_tx = set()
+    while True:
+        try:
+            txs = supabase.table("transactions").select("*").eq("status", "Pending").execute().data or []
+            for tx in txs:
+                tx_id = tx['id']
+                if tx_id in processed_tx: continue
+                verify = supabase.table("VerifyPayment").select("*").eq("transaction_id", tx['transaction_id']).eq("status", "unused").execute().data
+                match = None
+                if verify:
+                    for v in verify:
+                        if abs(float(v["amount_usd"]) - float(tx["amount"])) < 0.01: match = v; break
+                if match:
+                    user = supabase.table("users").select("balance_usd").eq("email", tx['email']).execute().data
+                    if user:
+                        old = float(user[0]['balance_usd']); new = old + float(tx["amount"])
+                        supabase.table("VerifyPayment").update({"status": "used"}).eq("transaction_id", tx['transaction_id']).execute()
+                        supabase.table("users").update({"balance_usd": new}).eq("email", tx['email']).execute()
+                        supabase.table("transactions").update({"status": "Accepted"}).eq("id", tx_id).execute()
+                        send_log(config.AFFILIATE_GROUP_ID, f"✅ **Auto Top-up Success!**\n👤 `{tx['email']}`\n💵 `${tx['amount']}`\n💰 `${old}` ➝ `${new}`")
+                else:
+                    supabase.table("transactions").update({"status": "Processing"}).eq("id", tx_id).execute()
+                    send_log(config.AFFILIATE_GROUP_ID, f"🆕 **Unverified Tx**\nID: `{tx_id}`\nUser: `{tx['email']}`\nAmt: `${tx['amount']}`\n/Yes {tx_id} | /No {tx_id}")
+                processed_tx.add(tx_id)
+        except: pass
+        time.sleep(10)
+
+# 4. AFFILIATE POLLER
+def poll_affiliate():
+    processed_aff = set()
+    while True:
+        try:
+            reqs = supabase.table("affiliate").select("*").eq("status", "Pending").execute().data or []
+            for req in reqs:
+                rid = req['id']
+                if rid in processed_aff: continue
+                supabase.table("affiliate").update({"status": "Processing"}).eq("id", rid).execute()
+                send_log(config.AFFILIATE_GROUP_ID, f"💸 **Affiliate Payout**\nUser: `{req['email']}`\nAmount: `${req['amount']}`\n/Accept {rid}")
+                processed_aff.add(rid)
+        except: pass
+        time.sleep(10)
+
+# 5. RATE CHECKER
+def check_smmgen_rates_loop():
+    while True:
+        try:
+            payload = {'key': config.SMM_API_KEY, 'action': 'services'}
+            res = requests.post(config.SMM_API_URL, data=payload, timeout=30).json()
+            local = supabase.table("services").select("id, service_id, buy_price, service_name").execute().data or []
+            for ls in local:
+                api_svc = next((s for s in res if str(s['service']) == str(ls['service_id'])), None)
+                if api_svc:
+                    api_rate = float(api_svc['rate']); old_rate = float(ls['buy_price'])
+                    if abs(old_rate - api_rate) > 0.0001:
+                        supabase.table("services").update({"buy_price": api_rate}).eq("id", ls['id']).execute()
+                        send_log(config.REPORT_GROUP_ID, f"📉📈 **Price Changed**\n🆔 `{ls['id']}`\n📦 {ls['service_name']}\n💰 `${old_rate}` ➝ `${api_rate}`")
+        except: pass
+        time.sleep(3600)
 
 # 6. SUPPORT POLLER
 def poll_supportbox_worker():
