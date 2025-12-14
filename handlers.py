@@ -347,8 +347,15 @@ async def admin_tx_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 old = float(u[0]['balance_usd']); new = old + float(tx[0]['amount'])
                 supabase.table("users").update({"balance_usd": new}).eq("email", tx[0]['email']).execute()
                 supabase.table("transactions").update({"status": "Accepted"}).eq("id", tx_id).execute()
-                notify_group(config.AFFILIATE_GROUP_ID, f"✅ **Approved**\nUser: `{tx[0]['email']}`\nBal: `${old}` ➝ `${new}`")
-                await update.message.reply_text("Approved.")
+                
+                # ✅ Format matching your request
+                msg = (
+                    f"✅ Transaction Approved\n"
+                    f"User: {tx[0]['email']}\n"
+                    f"Balance: ${old} ➝ ${new}"
+                )
+                notify_group(config.AFFILIATE_GROUP_ID, msg)
+                await update.message.reply_text(f"Transaction #{tx_id} marked as Accepted and balance updated.")
     except: pass
 
 async def admin_tx_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
