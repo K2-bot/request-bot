@@ -307,11 +307,37 @@ async def sup_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = get_user(update.effective_user.id)
-        for lid in update.message.text.split(','):
-            if lid.strip().isdigit(): supabase.table('SupportBox').insert({"email": user['email'], "subject": context.user_data['stype'], "order_id": lid.strip(), "status": "Pending", "UserStatus": "unread"}).execute()
-        await update.message.reply_text("✅ Ticket Created.")
-        await help_command(update, context); return ConversationHandler.END
-    except: return ConversationHandler.END
+        raw_text = update.message.text
+        
+        # Check if text is valid
+        if not raw_text:
+            await update.message.reply_text("❌ Invalid Input.")
+            return ConversationHandler.END
+
+        ids = raw_text.split(',')
+        created_count = 0
+        
+        for lid in ids:
+            lid = lid.strip()
+            if lid.isdigit():
+                supabase.table('SupportBox').insert({
+                    "email": user['email'], 
+                    "subject": context.user_data.get('stype', 'Other'), 
+                    "order_id": lid, 
+                    "status": "Pending", 
+                    "UserStatus": "unread"
+                }).execute()
+                created_count += 1
+        
+        if created_count > 0:
+            await update.message.reply_text(f"✅ Ticket Created for {created_count} orders.")
+        else:
+            await update.message.reply_text("❌ No valid IDs found. Please enter numbers only.")
+            
+    except Exception as e:
+        await update.message.reply_text(f"⚠️ Error: {str(e)}")
+        
+    await help_command(update, context); return ConversationHandler.END
 
 # =========================================
 # 🛠️ ADMIN COMMANDS (All Included)
@@ -413,18 +439,30 @@ async def admin_order_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
 
 # --- C. SUPPORT ---
-async def admin_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_answer_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.SUPPORT_GROUP_ID: return
     try:
+        if len(context.args) < 2:
+            return await update.message.reply_text("⚠️ Usage: /Answer <ID> <Message>")
+            
         tid = context.args[0]; reply_msg = " ".join(context.args[1:])
-        supabase.table("SupportBox").update({"reply_text": reply_msg, "status": "Replied", "UserStatus": "unread"}).eq("id", tid).execute()
-        await update.message.reply_text(f"✅ Replied to #{tid}")
-    except: pass
+        
+        data = supabase.table("SupportBox").update({"reply_text": reply_msg, "status": "Replied", "UserStatus": "unread"}).eq("id", tid).execute()
+        
+        if data.data: await update.message.reply_text(f"✅ Replied to Ticket #{tid}")
+        else: await update.message.reply_text("❌ Ticket ID not found.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
 
 async def admin_ticket_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.SUPPORT_GROUP_ID: return
-    try: supabase.table("SupportBox").update({"status": "Closed"}).eq("id", context.args[0]).execute(); await update.message.reply_text("🔒 Closed.")
-    except: pass
+    try:
+        if not context.args: return await update.message.reply_text("⚠️ Usage: /Close <ID>")
+        tid = context.args[0]
+        supabase.table("SupportBox").update({"status": "Closed"}).eq("id", tid).execute()
+        await update.message.reply_text(f"🔒 Ticket #{tid} Closed.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
 
 # --- D. SYSTEM ADMIN ---
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
