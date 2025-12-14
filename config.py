@@ -12,17 +12,24 @@ SMM_API_KEY = os.getenv("SMM_API_KEY")
 SMM_API_URL = os.getenv("SMMGEN_URL", "https://smmgen.com/api/v2")
 
 # =========================================
-# 📢 TELEGRAM GROUPS & CHANNELS SETUP
+# 📢 TELEGRAM GROUPS MAPPING
 # =========================================
-# (ID များကို '-100...' ပုံစံဖြင့် အမှန်ထည့်ပါ)
-
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0")) 
-AFFILIATE_GROUP_ID = int(os.getenv("AFFILIATE_GROUP_ID", "0"))
-SUPPLIER_GROUP_ID = int(os.getenv("SUPPLIER_GROUP_ID", "0"))
-ORDER_LOG_GROUP_ID = int(os.getenv("ORDER_LOG_GROUP_ID", "0"))
-SUPPORT_GROUP_ID = int(os.getenv("SUPPORT_GROUP_ID", "0"))
+
+# 1. Daily Report (System Admin)
 REPORT_GROUP_ID = int(os.getenv("REPORT_GROUP_ID", "0"))
-ADMIN_GROUP_ID = SUPPLIER_GROUP_ID # For generic admin commands
+
+# 2. Affiliate & Tx (Finance)
+AFFILIATE_GROUP_ID = int(os.getenv("AFFILIATE_GROUP_ID", "0"))
+
+# 3. K2Boost (Orders Error/Manual)
+K2BOOST_GROUP_ID = int(os.getenv("K2BOOST_GROUP_ID", "0"))
+
+# 4. Supplier (API Logs)
+SUPPLIER_GROUP_ID = int(os.getenv("SUPPLIER_GROUP_ID", "0"))
+
+# 5. Support Box (Tickets)
+SUPPORT_GROUP_ID = int(os.getenv("SUPPORT_GROUP_ID", "0"))
 
 # Settings
 MMK_RATE = 5000 
