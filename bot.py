@@ -73,9 +73,11 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('Topup', handlers.admin_manual_topup))
     app.add_handler(CommandHandler('Done', handlers.admin_order_done))
     app.add_handler(CommandHandler('Error', handlers.admin_order_error))
-    app.add_handler(CommandHandler('Reply', handlers.admin_reply_ticket))
+    app.add_handler(CommandHandler('Answer', handlers.admin_answer_ticket)) # New Name
+    app.add_handler(CommandHandler('Close', handlers.admin_ticket_close))   # New Name
 
     print("Bot Running...")
     app.run_polling()
+
 
 
