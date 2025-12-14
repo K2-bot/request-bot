@@ -33,7 +33,7 @@ SUPPORT_GROUP_ID = int(os.getenv("SUPPORT_GROUP_ID", "0"))
 
 # Settings
 # 🔥 FIXED: Changed MMK_RATE to USD_TO_MMK to match jobs.py
-USD_TO_MMK = 5000 
+USD_TO_MMK = 4500
 TZ = ZoneInfo("Asia/Yangon")
 
 # Conversation States
