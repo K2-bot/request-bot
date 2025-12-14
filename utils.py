@@ -59,7 +59,7 @@ def parse_smm_support_response(api_response, req_type, local_id):
     text = str(api_response).lower()
     if req_type == 'Refill':
         if 'refill request has been received' in text or 'queued' in text: return "✅ Refill Queued."
-        elif 'canceled' in text: return "❌ Order Canceled."
+        elif 'canceled' in text or 'refunded' in text: return "❌ Order Canceled/Refunded."
         return f"⚠️ {api_response}"
     elif req_type == 'Cancel':
         if 'cancellation queue' in text: return "✅ Cancellation Queued."
