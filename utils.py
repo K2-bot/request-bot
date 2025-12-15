@@ -23,9 +23,22 @@ TEXTS = {
         'confirm_order': "❓ **အော်ဒါတင်ရန် သေချာပါသလား?**\n\n💵 ကျသင့်ငွေ: {cost}\n✅ Yes ကိုနှိပ်၍ ဆက်သွားပါ။",
         'order_success': "✅ **အော်ဒါ လက်ခံရရှိပါသည်!**\nID: {id}\nလက်ကျန်: {bal}\n\n⚙️ နောက်ကွယ်တွင် ဆက်လက်ဆောင်ရွက်နေပါပြီ...",
         'cancel': "🚫 မလုပ်တော့ပါ။",
+        # 🔥 UPDATED: New Design
         'help_title': "👤 **အကောင့် အချက်အလက်**",
         'mass_confirm': "📊 **Mass Order အကျဉ်းချုပ်**\n\n✅ အောင်မြင်: {valid}\n❌ မှားယွင်း: {invalid}\n💵 စုစုပေါင်း: {cost}\n\nအော်ဒါတင်မှာ သေချာပါသလား?",
-        'help_msg': "📋 **အသုံးပြုနိုင်သော Commands:**\n1️⃣ /services - ဈေးနှုန်းကြည့်ရန်\n2️⃣ /neworder - မှာယူရန်\n3️⃣ /massorder - အများကြီးမှာရန်\n4️⃣ /history - မှတ်တမ်းကြည့်ရန်\n5️⃣ /check <ID> - Status စစ်ရန်\n6️⃣ /support - အကူအညီတောင်းရန်\n7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n🌐 Website - k2boost.org"
+        'help_msg': (
+            "📋 **အသုံးပြုနိုင်သော Commands:**\n"
+            "1️⃣ /services - ဈေးနှုန်းကြည့်ရန်\n"
+            "2️⃣ /neworder - မှာယူရန်\n"
+            "3️⃣ /massorder - အများကြီးမှာရန်\n"
+            "4️⃣ /history - မှတ်တမ်းကြည့်ရန်\n"
+            "5️⃣ /check <ID> - Status စစ်ရန်\n"
+            "6️⃣ /support - အကူအညီတောင်းရန်\n"
+            "7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n"
+            "🌐 Website - k2boost.org\n"
+            "@k2boostservice\n"
+            "https://t.me/k2_boost"
+        )
     }
 }
 
@@ -34,7 +47,6 @@ def get_text(lang, key, **kwargs):
     return TEXTS[lang_code].get(key, key).format(**kwargs)
 
 def format_currency(amount, currency):
-    # 🔥 FIXED: Changed config.MMK_RATE to config.USD_TO_MMK
     if currency == 'MMK': return f"{amount * config.USD_TO_MMK:,.0f} Ks"
     return f"${amount:.4f}"
 
