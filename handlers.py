@@ -114,25 +114,52 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else: await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args: return await update.message.reply_text("Usage: `/check 1234`", parse_mode='Markdown')
-    ids = context.args[0].split(','); msg = ""; user = get_user(update.effective_user.id)
-    for oid in ids:
-        if not oid.strip().isdigit(): continue
+    if not context.args: return await update.message.reply_text("Usage: `/check <ID>`", parse_mode='Markdown')
+    
+    input_ids = context.args[0].split(',')
+    msg = ""
+    user = get_user(update.effective_user.id)
+    
+    for oid in input_ids:
+        oid = oid.strip()
+        if not oid: continue
+        
         try:
-            o = supabase.table('WebsiteOrders').select("*").eq('id', oid.strip()).eq('email', user['email']).execute().data
-            if o: msg += f"🆔 `{o[0]['id']}` | 🔢 {o[0]['quantity']} | ✅ {o[0]['status']}\n\n"
-            else: msg += f"❌ Order {oid}: Not found.\n"
+            # Check by Local ID OR Supplier Order ID
+            # Note: We filter by email for security
+            data = supabase.table('WebsiteOrders').select("*").eq('email', user['email']).or_(f"id.eq.{oid},supplier_order_id.eq.{oid}").execute().data
+            
+            if data:
+                o = data[0]
+                # Display logic
+                display_id = o['supplier_order_id'] if o['supplier_name'] != 'k2boost' and o['supplier_order_id'] != '0' else o['id']
+                
+                msg += (f"🆔 `{display_id}` | 🔢 {o['quantity']} | ✅ {o['status']}\n"
+                        f"📦 {o.get('service', 'Service')}\n\n")
+            else:
+                msg += f"❌ Order {oid}: Not found.\n"
         except: pass
-    await update.message.reply_text(msg)
+        
+    await update.message.reply_text(msg if msg else "❌ Not found.", parse_mode='Markdown')
 
+# --- HISTORY COMMAND (Show Supplier ID if not K2Boost) ---
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         orders = supabase.table('WebsiteOrders').select("*").eq('email', get_user(update.effective_user.id)['email']).order('id', desc=True).limit(5).execute().data
         if not orders: return await update.message.reply_text("No history.")
-        msg = "📜 **History**\n\n"
-        for o in orders: msg += f"🆔 `{o['id']}` | 🔢 {o['quantity']} | ✅ {o['status']}\n🔗 {o['link']}\n----------------\n"
+        
+        msg = "📜 **History (Last 5)**\n\n"
+        for o in orders:
+            # Logic: If SMMGen/Others, show Supplier ID. If K2Boost, show Local ID.
+            if o.get('supplier_name') != 'k2boost' and o.get('supplier_order_id') and o.get('supplier_order_id') != '0':
+                show_id = f"SupID: `{o['supplier_order_id']}`"
+            else:
+                show_id = f"ID: `{o['id']}`"
+                
+            msg += f"{show_id} | 🔢 {o['quantity']} | ✅ {o['status']}\n🔗 {o['link']}\n----------------\n"
+            
         await update.message.reply_text(msg, parse_mode='Markdown', disable_web_page_preview=True)
-    except: await update.message.reply_text("Error.")
+    except: await update.message.reply_text("Error fetching history.")
 
 async def services_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🛍 **Services:**\nCheck @k2boost for prices.", parse_mode='Markdown')
@@ -294,38 +321,47 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================
 # 💬 SUPPORT
 # =========================================
+
+
+# --- SUPPORT HANDLER (Added Speed Up & Message Format) ---
 async def sup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [[InlineKeyboardButton("Refill", callback_data="s_Refill"), InlineKeyboardButton("Cancel", callback_data="s_Cancel")]]
+    # Added "Speed up" button
+    kb = [
+        [InlineKeyboardButton("Refill", callback_data="s_Refill"), InlineKeyboardButton("Cancel", callback_data="s_Cancel")],
+        [InlineKeyboardButton("Speed up", callback_data="s_Speed up")]
+    ]
     await update.message.reply_text("Select Issue:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def sup_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
-    context.user_data['stype'] = query.data.split("_")[1]
-    await query.edit_message_text("Send Order IDs (comma separated):")
+    context.user_data['stype'] = query.data.split("_")[1] # Refill, Cancel, or Speed up
+    await query.edit_message_text(f"Selected: {context.user_data['stype']}\n\nSend Order IDs (comma separated):")
     return config.WAITING_SUPPORT_ID
 
 async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = get_user(update.effective_user.id)
         raw_text = update.message.text
-        
+        subject = context.user_data.get('stype', 'Support')
+
         if not raw_text:
             await update.message.reply_text("❌ Invalid Input.")
             return ConversationHandler.END
 
         ids = raw_text.split(',')
         created_count = 0
-        subject = context.user_data.get('stype', 'Support') # Refill or Cancel
         
         for lid in ids:
             lid = lid.strip()
             if lid.isdigit():
-                # 🔥 FIXED: Added "message" field to satisfy Database Constraint
+                # 🔥 Construct Message Format: "718 Speed up"
+                custom_msg = f"{lid} {subject}"
+                
                 supabase.table('SupportBox').insert({
                     "email": user['email'], 
                     "subject": subject, 
                     "order_id": lid, 
-                    "message": f"{subject} Request for Order #{lid}", # Default Message ထည့်ပေးလိုက်ပါသည်
+                    "message": custom_msg, # Database requires this
                     "status": "Pending", 
                     "UserStatus": "unread"
                 }).execute()
@@ -334,13 +370,12 @@ async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if created_count > 0:
             await update.message.reply_text(f"✅ Ticket Created for {created_count} orders.")
         else:
-            await update.message.reply_text("❌ No valid IDs found. Please enter numbers only.")
+            await update.message.reply_text("❌ No valid IDs found.")
             
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {str(e)}")
         
-    await help_command(update, context); return ConversationHandler.E
-
+    await help_command(update, context); return ConversationHandler.END
 # =========================================
 # 🛠️ ADMIN COMMANDS (All Included)
 # =========================================
