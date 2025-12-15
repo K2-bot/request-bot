@@ -521,3 +521,75 @@ async def admin_change_attr(update: Update, context: ContextTypes.DEFAULT_TYPE):
             supabase.table("services").update({args[1].lower(): " ".join(args[2:])}).eq("id", int(args[0])).execute()
             await update.message.reply_text("✅ Updated.")
     except: pass
+def clean_service_name_handler(raw_name):
+    name = re.sub(r"\s*~\s*Max\s*[\d\.]+[KkMmBb]?\s*", "", raw_name, flags=re.IGNORECASE)
+    name = re.sub(r"\s*~\s*[\d\.]+[KkMm]?/days?\s*", "", name, flags=re.IGNORECASE)
+    return name.strip()
+
+# 💰 Price Calculation Helper
+def calculate_sell_price_handler(buy_price, service_name):
+    if 'view' in service_name.lower():
+        return round(buy_price * 3.0, 4)
+    return round(buy_price * 1.4, 4)
+
+# 🔥 /add <Start> <End> <Type>
+async def admin_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != config.REPORT_GROUP_ID: return
+    
+    if len(context.args) < 3:
+        await update.message.reply_text("⚠️ Usage: `/add <StartID> <EndID> <Type>`\nEx: `/add 16012 16017 TikTok Followers`", parse_mode='Markdown')
+        return
+
+    try:
+        start_id = int(context.args[0])
+        end_id = int(context.args[1])
+        custom_type = " ".join(context.args[2:]) 
+        
+        await update.message.reply_text("🔄 Fetching from SMMGen API...")
+        
+        res = requests.post(config.SMM_API_URL, data={'key': config.SMM_API_KEY, 'action': 'services'}).json()
+        
+        targets = []
+        for s in res:
+            sid = int(s['service'])
+            if start_id <= sid <= end_id:
+                targets.append(s)
+        
+        if not targets:
+            await update.message.reply_text("❌ No services found in that ID range.")
+            return
+
+        added_count = 0
+        for item in targets:
+            s_id = str(item['service'])
+            
+            exists = supabase.table("services").select("id").eq("service_id", s_id).execute().data
+            if exists: continue 
+            
+            raw_name = item['name']
+            final_name = clean_service_name_handler(raw_name)
+            buy_price = float(item['rate'])
+            sell_price = calculate_sell_price_handler(buy_price, final_name)
+            
+            # 🔥 CHANGE: Use API 'type' as 'use_type' directly
+            api_type = item.get('type', 'Default') 
+            
+            supabase.table("services").insert({
+                "service_id": s_id,
+                "service_name": final_name,
+                "category": item['category'], 
+                "type": custom_type,          # User input (e.g., TikTok Followers)
+                "min": int(item['min']),
+                "max": int(item['max']),
+                "buy_price": buy_price,
+                "sell_price": sell_price,
+                "use_type": api_type,         # ✅ From API (Default, Package, etc.)
+                "source": "smmgen",
+                "per_quantity": 1000
+            }).execute()
+            added_count += 1
+            
+        await update.message.reply_text(f"✅ **Success!**\nAdded {added_count} services.\nRange: {start_id}-{end_id}\nType: {custom_type}", parse_mode='Markdown')
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str
