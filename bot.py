@@ -38,7 +38,6 @@ if __name__ == '__main__':
     threading.Thread(target=jobs.process_pending_orders_loop, daemon=True).start()
     threading.Thread(target=jobs.smmgen_status_batch_loop, daemon=True).start()
     threading.Thread(target=jobs.poll_supportbox_worker, daemon=True).start()
-    threading.Thread(target=jobs.auto_import_services_loop, daemon=True).start()
     threading.Thread(target=send_startup_alert, daemon=True).start()
 
     app = ApplicationBuilder().token(config.BOT_TOKEN).build()
@@ -75,9 +74,11 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('Error', handlers.admin_order_error))
     app.add_handler(CommandHandler('Answer', handlers.admin_answer_ticket)) # New Name
     app.add_handler(CommandHandler('Close', handlers.admin_ticket_close))   # New Name
-
+    app.add_handler(CommandHandler('add', handlers.admin_add_bulk))
+    
     print("Bot Running...")
     app.run_polling()
+
 
 
 
