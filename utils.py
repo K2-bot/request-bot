@@ -1,38 +1,38 @@
 import config
+import html
 
 TEXTS = {
     'en': {
-        'welcome_login': "✅ **Login Successful!**\nAccount: {email}",
-        'select_lang': "Please select your **Language**:",
-        'select_curr': "Please select your **Currency**:",
-        'setup_done': "🎉 **Setup Complete!**\n\nType /help to start.",
-        'balance_low': "⚠️ **Insufficient Balance**\n\nPlease top up on website: k2boost.org",
-        'confirm_order': "❓ **Confirm Order?**\n\n💵 Cost: {cost}\n✅ Yes to proceed.",
-        'order_success': "✅ **Order Queued!**\nID: {id}\nBalance: {bal}\n\n⚙️ Processing in background...",
+        'welcome_login': "✅ <b>Login Successful!</b>\nAccount: {email}",
+        'select_lang': "Please select your <b>Language</b>:",
+        'select_curr': "Please select your <b>Currency</b>:",
+        'setup_done': "🎉 <b>Setup Complete!</b>\n\nType /help to start.",
+        'balance_low': "⚠️ <b>Insufficient Balance</b>\n\nPlease top up on website: k2boost.org",
+        'confirm_order': "❓ <b>Confirm Order?</b>\n\n💵 Cost: {cost}\n✅ Yes to proceed.",
+        'order_success': "✅ <b>Order Queued!</b>\nID: {id}\nBalance: {bal}\n\n⚙️ Processing in background...",
         'cancel': "🚫 Action Canceled.",
-        'help_title': "👤 **Account Info**",
-        'mass_confirm': "📊 **Mass Order Summary**\n\n✅ Valid: {valid}\n❌ Invalid: {invalid}\n💵 Total Cost: {cost}\n\nProceed?",
-        'help_msg': "📋 **Available Commands:**\n1️⃣ /services - View Prices\n2️⃣ /neworder - Place Order\n3️⃣ /massorder - Bulk Order\n4️⃣ /history - View History\n5️⃣ /check <ID> - Check Status\n6️⃣ /support - Ticket/Refill\n7️⃣ /settings - Language/Currency\n\n🌐 Website - k2boost.org"
+        'help_title': "👤 <b>Account Info</b>",
+        'mass_confirm': "📊 <b>Mass Order Summary</b>\n\n✅ Valid: {valid}\n❌ Invalid: {invalid}\n💵 Total Cost: {cost}\n\nProceed?",
+        'help_msg': "📋 <b>Available Commands:</b>\n1️⃣ /services - View Prices\n2️⃣ /neworder - Place Order\n3️⃣ /massorder - Bulk Order\n4️⃣ /history - View History\n5️⃣ /check ID - Check Status\n6️⃣ /support - Ticket/Refill\n7️⃣ /settings - Language/Currency\n\n🌐 Website - k2boost.org"
     },
     'mm': {
-        'welcome_login': "✅ **Login ဝင်ခြင်း အောင်မြင်ပါသည်**\nအကောင့်: {email}",
-        'select_lang': "**ဘာသာစကား** ရွေးချယ်ပါ:",
-        'select_curr': "**ငွေကြေး** အမျိုးအစား ရွေးချယ်ပါ:",
-        'setup_done': "🎉 **ပြင်ဆင်မှု ပြီးစီးပါပြီ!**",
-        'balance_low': "⚠️ **လက်ကျန်ငွေ မလုံလောက်ပါ**\n\nWebsite တွင် ငွေဖြည့်ပါ: k2boost.org",
-        'confirm_order': "❓ **အော်ဒါတင်ရန် သေချာပါသလား?**\n\n💵 ကျသင့်ငွေ: {cost}\n✅ Yes ကိုနှိပ်၍ ဆက်သွားပါ။",
-        'order_success': "✅ **အော်ဒါ လက်ခံရရှိပါသည်!**\nID: {id}\nလက်ကျန်: {bal}\n\n⚙️ နောက်ကွယ်တွင် ဆက်လက်ဆောင်ရွက်နေပါပြီ...",
+        'welcome_login': "✅ <b>Login ဝင်ခြင်း အောင်မြင်ပါသည်</b>\nအကောင့်: {email}",
+        'select_lang': "<b>ဘာသာစကား</b> ရွေးချယ်ပါ:",
+        'select_curr': "<b>ငွေကြေး</b> အမျိုးအစား ရွေးချယ်ပါ:",
+        'setup_done': "🎉 <b>ပြင်ဆင်မှု ပြီးစီးပါပြီ!</b>",
+        'balance_low': "⚠️ <b>လက်ကျန်ငွေ မလုံလောက်ပါ</b>\n\nWebsite တွင် ငွေဖြည့်ပါ: k2boost.org",
+        'confirm_order': "❓ <b>အော်ဒါတင်ရန် သေချာပါသလား?</b>\n\n💵 ကျသင့်ငွေ: {cost}\n✅ Yes ကိုနှိပ်၍ ဆက်သွားပါ။",
+        'order_success': "✅ <b>အော်ဒါ လက်ခံရရှိပါသည်!</b>\nID: {id}\nလက်ကျန်: {bal}\n\n⚙️ နောက်ကွယ်တွင် ဆက်လက်ဆောင်ရွက်နေပါပြီ...",
         'cancel': "🚫 မလုပ်တော့ပါ။",
-        # 🔥 UPDATED: New Design
-        'help_title': "👤 **အကောင့် အချက်အလက်**",
-        'mass_confirm': "📊 **Mass Order အကျဉ်းချုပ်**\n\n✅ အောင်မြင်: {valid}\n❌ မှားယွင်း: {invalid}\n💵 စုစုပေါင်း: {cost}\n\nအော်ဒါတင်မှာ သေချာပါသလား?",
+        'help_title': "👤 <b>အကောင့် အချက်အလက်</b>",
+        'mass_confirm': "📊 <b>Mass Order အကျဉ်းချုပ်</b>\n\n✅ အောင်မြင်: {valid}\n❌ မှားယွင်း: {invalid}\n💵 စုစုပေါင်း: {cost}\n\nအော်ဒါတင်မှာ သေချာပါသလား?",
         'help_msg': (
-            "📋 **အသုံးပြုနိုင်သော Commands:**\n"
+            "📋 <b>အသုံးပြုနိုင်သော Commands:</b>\n"
             "1️⃣ /services - ဈေးနှုန်းကြည့်ရန်\n"
             "2️⃣ /neworder - မှာယူရန်\n"
             "3️⃣ /massorder - အများကြီးမှာရန်\n"
             "4️⃣ /history - မှတ်တမ်းကြည့်ရန်\n"
-            "5️⃣ /check <ID> - Status စစ်ရန်\n"
+            "5️⃣ /check ID - Status စစ်ရန်\n"
             "6️⃣ /support - အကူအညီတောင်းရန်\n"
             "7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n"
             "🌐 Website - k2boost.org\n"
@@ -57,16 +57,17 @@ def calculate_cost(quantity, service_data):
     return (quantity / per_qty) * sell_price
 
 def format_for_user(service, lang='en', curr='USD'):
-    name = service.get('service_name', 'Unknown')
+    name = html.escape(service.get('service_name', 'Unknown'))
     price_usd = float(service.get('sell_price', 0))
     min_q = service.get('min', 0)
     max_q = service.get('max', 0)
     per_qty = service.get('per_quantity', 1000)
     raw_note = service.get('note_mm') if lang == 'mm' else service.get('note_eng')
-    desc = (raw_note or "").replace("\\n", "\n").strip()
+    desc = html.escape((raw_note or "").replace("\\n", "\n").strip())
     price_display = format_currency(price_usd, curr)
-    return (f"✅ **Selected Service**\n🔥 *{name}*\n🆔 *ID:* `{service.get('id')}`\n"
-            f"💵 *Price:* {price_display} (per {per_qty})\n📉 *Limit:* {min_q} - {max_q}\n\n📝 *Description:*\n{desc}")
+    
+    return (f"✅ <b>Selected Service</b>\n🔥 {name}\n🆔 <b>ID:</b> <code>{service.get('id')}</code>\n"
+            f"💵 <b>Price:</b> {price_display} (per {per_qty})\n📉 <b>Limit:</b> {min_q} - {max_q}\n\n📝 <b>Description:</b>\n{desc}")
 
 def parse_smm_support_response(api_response, req_type, local_id):
     text = str(api_response).lower()
