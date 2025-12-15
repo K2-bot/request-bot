@@ -592,4 +592,4 @@ async def admin_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ **Success!**\nAdded {added_count} services.\nRange: {start_id}-{end_id}\nType: {custom_type}", parse_mode='Markdown')
 
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str
+        await update.message.reply_text(f"❌ Error: {str(e)}")
