@@ -122,14 +122,11 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not oid: continue
         
         try:
-            # Check by Local ID OR Supplier Order ID
             data = supabase.table('WebsiteOrders').select("*").eq('email', user['email']).or_(f"id.eq.{oid},supplier_order_id.eq.{oid}").execute().data
             
             if data:
                 o = data[0]
-                # Display logic
                 display_id = o['supplier_order_id'] if o['supplier_name'] != 'k2boost' and o['supplier_order_id'] != '0' else o['id']
-                
                 msg += (f"🆔 `{display_id}` | 🔢 {o['quantity']} | ✅ {o['status']}\n"
                         f"📦 {o.get('service', 'Service')}\n\n")
             else:
@@ -138,7 +135,6 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     await update.message.reply_text(msg if msg else "❌ Not found.", parse_mode='Markdown')
 
-# 🔥 MODIFIED: HISTORY COMMAND (Fixing Display)
 async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         orders = supabase.table('WebsiteOrders').select("*").eq('email', get_user(update.effective_user.id)['email']).order('id', desc=True).limit(5).execute().data
@@ -146,14 +142,12 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         msg = "📜 **History (Last 5)**\n\n"
         for o in orders:
-            # Logic: Show Service Name, and ID without "SupID" prefix
             if o.get('supplier_name') != 'k2boost' and o.get('supplier_order_id') and o.get('supplier_order_id') != '0':
                 show_id = f"`{o['supplier_order_id']}`"
             else:
                 show_id = f"`{o['id']}`"
             
             svc_name = o.get('service', 'Service')
-            
             msg += (
                 f"🆔 {show_id} | 🔢 {o['quantity']} | ✅ {o['status']}\n"
                 f"📦 {svc_name}\n"
@@ -193,25 +187,81 @@ async def setting_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await help_command(update, context); return ConversationHandler.END
 
 # =========================================
-# 🛒 ORDERS & MASS ORDERS (Fixed)
+# 🛒 ORDERS & MASS ORDERS (RESTORED)
 # =========================================
+
+async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user; db_user = get_user(user.id)
+    if not db_user: return await start(update, context)
+    
+    target_id = None
+    if context.args: target_id = context.args[0]
+    elif context.user_data.get('deep_link_id'): target_id = context.user_data.pop('deep_link_id')
+    
+    if not target_id:
+        await update.message.reply_text("Usage: `/neworder <ID>`", parse_mode='Markdown')
+        return ConversationHandler.END
+        
+    if "order_" in target_id: target_id = target_id.split("_")[1]
+    
+    res = supabase.table('services').select("*").eq('id', target_id).execute()
+    if not res.data:
+        await update.message.reply_text("❌ ID Not Found.")
+        return ConversationHandler.END
+        
+    svc = res.data[0]; context.user_data['order_svc'] = svc
+    
+    prompt = f"🔗 **Enter Link for:**\n_{svc['service_name']}_"
+    if svc.get('use_type') == 'Telegram username':
+        prompt += "\n\n(Example: @username or https://t.me/...)"
+    
+    await update.message.reply_text(f"{format_for_user(svc, db_user.get('language','en'), db_user.get('currency','USD'))}\n\n{prompt}", parse_mode='Markdown')
+    return config.ORDER_WAITING_LINK
+
+async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['order_link'] = update.message.text.strip()
+    svc = context.user_data['order_svc']
+    await update.message.reply_text(f"📊 **Quantity**\nMin: {svc['min']} - Max: {svc['max']}")
+    return config.ORDER_WAITING_QTY
+
+async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: qty = int(update.message.text.strip())
+    except: 
+        await update.message.reply_text("❌ Numbers only.")
+        return config.ORDER_WAITING_QTY
+        
+    svc = context.user_data['order_svc']
+    if qty < svc['min'] or qty > svc['max']:
+        await update.message.reply_text(f"❌ Invalid Qty. ({svc['min']}-{svc['max']})")
+        return config.ORDER_WAITING_QTY
+        
+    context.user_data['order_qty'] = qty
+    cost = calculate_cost(qty, svc)
+    context.user_data['cost_usd'] = cost
+    
+    user = get_user(update.effective_user.id)
+    cost_display = format_currency(cost, user.get('currency', 'USD'))
+    text = get_text(user.get('language','en'), 'confirm_order', cost=cost_display)
+    
+    kb = [[InlineKeyboardButton("✅ Yes", callback_data="yes"), InlineKeyboardButton("❌ No", callback_data="no")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+    return config.ORDER_CONFIRM
 
 async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     if query.data == 'no':
         await query.edit_message_text("🚫 Canceled.")
-        await help_command(update, context) # 🔥 Auto Back to Help
+        await help_command(update, context)
         return ConversationHandler.END
         
     user = get_user(update.effective_user.id); cost = context.user_data['cost_usd']
     
     if float(user['balance_usd']) < cost:
         await query.edit_message_text(f"⚠️ **Insufficient Balance**\n\n💵 Cost: ${cost:.4f}\n💰 Your Balance: ${user['balance_usd']:.4f}\n\nPlease top up.", parse_mode='Markdown')
-        await help_command(update, context) # 🔥 Auto Back to Help
+        await help_command(update, context)
         return ConversationHandler.END
         
     try:
-        # 🔥 FIX: Use update.effective_user.id instead of user.id (since user is a dict)
         new_bal = float(user['balance_usd']) - cost
         supabase.table('users').update({'balance_usd': new_bal}).eq('telegram_id', update.effective_user.id).execute()
         
@@ -225,9 +275,8 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await help_command(update, context); return ConversationHandler.END
 
-# --- MASS ORDER (Fix: Input Format & Dict Error) ---
+# --- MASS ORDER ---
 async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 🔥 Updated Prompt
     await update.message.reply_text("🚀 **Mass Order**\nFormat: `ID Link Qty`\n(Space separated, One per line)", parse_mode='Markdown')
     return config.WAITING_MASS_INPUT
 
@@ -235,12 +284,9 @@ async def mass_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = update.message.text.strip().split('\n'); valid = []; total = 0.0
     for line in lines:
         try:
-            # 🔥 FIX: Split by whitespace (supports '12 link 1000' and '12 | link | 1000')
             line = line.replace('|', ' ') 
             p = line.split()
-            
             if len(p) != 3: continue
-            
             res = supabase.table('services').select("*").eq('id', p[0]).execute()
             if res.data:
                 cost = calculate_cost(int(p[2]), res.data[0]); total += cost
@@ -256,21 +302,18 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     if query.data == 'mass_no':
         await query.edit_message_text("🚫 Canceled.")
-        await help_command(update, context) # 🔥 Auto Back to Help
+        await help_command(update, context)
         return ConversationHandler.END
         
     user = get_user(update.effective_user.id); total = context.user_data['mass_total']
-    
     if float(user['balance_usd']) < total:
         await query.edit_message_text(f"⚠️ **Insufficient Balance**\nNeeded: ${total}\nHas: ${user['balance_usd']}", parse_mode='Markdown')
-        await help_command(update, context) # 🔥 Auto Back to Help
+        await help_command(update, context)
         return ConversationHandler.END
         
     try:
-        # 🔥 FIX: Use update.effective_user.id
         new_bal = float(user['balance_usd']) - total
         supabase.table('users').update({'balance_usd': new_bal}).eq('telegram_id', update.effective_user.id).execute()
-        
         for o in context.user_data['mass_queue']:
             supabase.table('WebsiteOrders').insert({"email": user['email'], "service": o['svc']['service_name'], "link": o['link'], "quantity": o['qty'], "sell_charge": o['cost'], "status": "Pending", "UsedType": "MassOrder", "supplier_service_id": o['svc']['service_id'], "supplier_name": "smmgen"}).execute()
         await query.edit_message_text("✅ Mass Order Queued!")
@@ -280,13 +323,10 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await help_command(update, context); return ConversationHandler.END
 
 # =========================================
-# 💬 SUPPORT (Logic Updated: Verify & Grouping)
+# 💬 SUPPORT
 # =========================================
 async def sup_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    kb = [
-        [InlineKeyboardButton("Refill", callback_data="s_Refill"), InlineKeyboardButton("Cancel", callback_data="s_Cancel")],
-        [InlineKeyboardButton("Speed up", callback_data="s_Speed up")]
-    ]
+    kb = [[InlineKeyboardButton("Refill", callback_data="s_Refill"), InlineKeyboardButton("Cancel", callback_data="s_Cancel")], [InlineKeyboardButton("Speed up", callback_data="s_Speed up")]]
     await update.message.reply_text("Select Issue:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def sup_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -306,66 +346,44 @@ async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         input_ids = [x.strip() for x in raw_text.split(',') if x.strip().isdigit()]
-        
         if not input_ids:
             await update.message.reply_text("❌ No valid numbers found.")
             return ConversationHandler.END
 
-        # 🔥 STEP 1: Verify Ownership
-        # Check if these IDs exist and belong to the user
         valid_orders = supabase.table('WebsiteOrders').select("id").in_("id", input_ids).eq("email", user['email']).execute().data
         valid_ids = [str(o['id']) for o in valid_orders]
-        
-        # Find invalid IDs
         invalid_ids = list(set(input_ids) - set(valid_ids))
         
         if invalid_ids:
             error_msg = f"❌ **Unable to Process:**\nOrder {', '.join(invalid_ids)} - Not found or does not belong to your account.\n\nThank you for using our service!"
             await update.message.reply_text(error_msg, parse_mode='Markdown')
-            await help_command(update, context) # Auto return
+            await help_command(update, context)
             return ConversationHandler.END
 
-        # 🔥 STEP 2: Create ONE Ticket for all valid IDs
         if valid_ids:
             joined_ids = ", ".join(valid_ids)
             custom_msg = f"{joined_ids} {subject}"
-            
-            supabase.table('SupportBox').insert({
-                "email": user['email'], 
-                "subject": subject, 
-                "order_id": joined_ids, # Storing all IDs in one field
-                "message": custom_msg,
-                "status": "Pending", 
-                "UserStatus": "unread"
-            }).execute()
-            
+            supabase.table('SupportBox').insert({"email": user['email'], "subject": subject, "order_id": joined_ids, "message": custom_msg, "status": "Pending", "UserStatus": "unread"}).execute()
             await update.message.reply_text(f"✅ Ticket Created for {len(valid_ids)} orders.")
             
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {str(e)}")
         
     await help_command(update, context); return ConversationHandler.END
-    
 
 # =========================================
-# 🛠️ ADMIN COMMANDS (All Included)
+# 🛠️ ADMIN COMMANDS
 # =========================================
 
-# --- SUPPORT BOX COMMANDS ---
 async def admin_answer_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.SUPPORT_GROUP_ID: return
     try:
-        if len(context.args) < 2:
-            return await update.message.reply_text("⚠️ Usage: /Answer <ID> <Message>")
-            
+        if len(context.args) < 2: return await update.message.reply_text("⚠️ Usage: /Answer <ID> <Message>")
         tid = context.args[0]; reply_msg = " ".join(context.args[1:])
-        
         data = supabase.table("SupportBox").update({"reply_text": reply_msg, "status": "Replied", "UserStatus": "unread"}).eq("id", tid).execute()
-        
         if data.data: await update.message.reply_text(f"✅ Replied to Ticket #{tid}")
         else: await update.message.reply_text("❌ Ticket ID not found.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+    except Exception as e: await update.message.reply_text(f"❌ Error: {e}")
 
 async def admin_ticket_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.SUPPORT_GROUP_ID: return
@@ -374,10 +392,9 @@ async def admin_ticket_close(update: Update, context: ContextTypes.DEFAULT_TYPE)
         tid = context.args[0]
         supabase.table("SupportBox").update({"status": "Closed"}).eq("id", tid).execute()
         await update.message.reply_text(f"🔒 Ticket #{tid} Closed.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+    except Exception as e: await update.message.reply_text(f"❌ Error: {e}")
 
-# --- AFFILIATE & FINANCE (Group: Affiliate) ---
+# ... (Other admin commands: admin_check_balance, admin_manual_topup, etc. - keep them here) ...
 async def admin_check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.AFFILIATE_GROUP_ID: return
     try:
@@ -441,7 +458,6 @@ async def admin_verify_use(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: supabase.table("VerifyPayment").update({"status": "used"}).eq("transaction_id", context.args[0]).execute(); await update.message.reply_text("✅ Marked Used.")
     except: pass
 
-# --- B. K2BOOST / ORDERS ---
 async def admin_order_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.K2BOOST_GROUP_ID: return
     try:
@@ -465,27 +481,17 @@ async def admin_order_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ Order {oid} Canceled & Refunded.")
     except: pass
 
-# --- D. SYSTEM ADMIN ---
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
-    
-    # 🔥 FIX: Removed limit, Filtered Demo
-    # .range(0, 1000) gets first 1000 rows. If you have more, increase this.
     svcs = supabase.table('services').select("*").neq('type', 'Demo').range(0, 1500).order('id', desc=False).execute().data
-    
     cats = {}
     for s in svcs: cats.setdefault(s['category'], []).append(s)
-    
     await update.message.reply_text(f"Posting {len(svcs)} services...")
-    
     for c, items in cats.items():
         msg = f"📂 <b>{c}</b>\n➖➖➖➖➖\n\n"
         for s in items: msg += f"⚡ <a href='https://t.me/{(await context.bot.get_me()).username}?start=order_{s['id']}'>ID:{s['id']} - {s['service_name']}</a>\n\n"
-        try: 
-            await context.bot.send_message(config.CHANNEL_ID, text=msg, parse_mode='HTML', disable_web_page_preview=True)
-            time.sleep(3) # Prevent FloodWait
+        try: await context.bot.send_message(config.CHANNEL_ID, text=msg, parse_mode='HTML', disable_web_page_preview=True); time.sleep(3)
         except: pass
-        
     await update.message.reply_text("Done.")
 
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
