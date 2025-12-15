@@ -338,46 +338,50 @@ def poll_supportbox_worker():
         time.sleep(10)
         
 # 6. RATE CHECKER (Standard)
+def calculate_sell_price(buy_price, service_name):
+    if 'view' in service_name.lower():
+        return round(buy_price * 3.0, 4) # View ဆို 3 ဆ
+    return round(buy_price * 1.4, 4)
+
 def check_smmgen_rates_loop():
+    print("📈 Rate Checker Worker Started...")
     while True:
         try:
             payload = {'key': config.SMM_API_KEY, 'action': 'services'}
             res = requests.post(config.SMM_API_URL, data=payload, timeout=30).json()
+            
+            # Database ထဲက Service တွေကို ယူမယ်
             local = supabase.table("services").select("id, service_id, buy_price, service_name").execute().data or []
+            
             for ls in local:
+                # API ထဲက ID တူတာကို ရှာမယ်
                 api_svc = next((s for s in res if str(s['service']) == str(ls['service_id'])), None)
+                
                 if api_svc:
-                    api_rate = float(api_svc['rate']); old_rate = float(ls['buy_price'])
+                    api_rate = float(api_svc['rate'])
+                    old_rate = float(ls['buy_price'])
+                    
+                    # ဈေးနှုန်းပြောင်းလဲမှုရှိမရှိ စစ်မယ် (0.0001 ကွာရင် ပြောင်းတယ်လို့ယူဆမယ်)
                     if abs(old_rate - api_rate) > 0.0001:
-                        supabase.table("services").update({"buy_price": api_rate}).eq("id", ls['id']).execute()
-                        msg = f"📉📈 <b>Price Changed</b>\n🆔 {ls['id']}\n📦 {ls['service_name']}\n💰 {old_rate} ➝ {api_rate}"
+                        # 💰 Sell Price ကိုပါ ပြန်တွက်မယ်
+                        new_sell = calculate_sell_price(api_rate, ls['service_name'])
+                        
+                        # Database မှာ Buy ရော Sell ရော Update လုပ်မယ်
+                        supabase.table("services").update({
+                            "buy_price": api_rate,
+                            "sell_price": new_sell
+                        }).eq("id", ls['id']).execute()
+                        
+                        # Admin ကို သတင်းပို့မယ်
+                        msg = (f"📉📈 <b>Price Updated</b>\n"
+                               f"🆔 {ls['service_id']}\n"
+                               f"📦 {ls['service_name']}\n"
+                               f"💵 Buy: {old_rate} ➝ {api_rate}\n"
+                               f"💰 Sell Updated: {new_sell}")
                         send_log_retry(config.REPORT_GROUP_ID, msg)
-        except: pass
+                        
+        except Exception as e:
+            print(f"❌ Rate Check Error: {e}")
+        
+        # ၁ နာရီနားမယ်
         time.sleep(3600)
-
-# 7. AUTO IMPORT
-def auto_import_services_loop():
-    while True:
-        try:
-            payload = {'key': config.SMM_API_KEY, 'action': 'services'}
-            res = requests.post(config.SMM_API_URL, data=payload, timeout=60).json()
-            existing = supabase.table("services").select("service_id").execute().data
-            existing_ids = [str(x['service_id']) for x in existing]
-            new_s = []
-            for item in res:
-                s_id = str(item['service'])
-                if s_id not in existing_ids:
-                    buy = float(item['rate'])
-                    sell = buy * 3.0 if 'view' in item['name'].lower() else buy * 1.4
-                    new_s.append({
-                        "service_id": s_id, "service_name": item['name'], "category": item['category'],
-                        "type": "Demo", "min": int(item['min']), "max": int(item['max']),
-                        "buy_price": buy, "sell_price": round(sell, 4), "source": "smmgen", "per_quantity": 1000
-                    })
-            if new_s:
-                data = supabase.table("services").insert(new_s).execute()
-                if data.data:
-                    for s in data.data:
-                        send_log_retry(config.REPORT_GROUP_ID, f"🆕 <b>Imported</b>\nID: {s['id']}\nName: {s['service_name']}")
-        except: pass
-        time.sleep(21600)
