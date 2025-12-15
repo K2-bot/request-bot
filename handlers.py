@@ -4,6 +4,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 import config
 from db import supabase, get_user
 from utils import get_text, format_currency, calculate_cost, format_for_user
+import re
 
 def notify_group(chat_id, text):
     try: requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
