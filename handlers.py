@@ -309,21 +309,23 @@ async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = get_user(update.effective_user.id)
         raw_text = update.message.text
         
-        # Check if text is valid
         if not raw_text:
             await update.message.reply_text("❌ Invalid Input.")
             return ConversationHandler.END
 
         ids = raw_text.split(',')
         created_count = 0
+        subject = context.user_data.get('stype', 'Support') # Refill or Cancel
         
         for lid in ids:
             lid = lid.strip()
             if lid.isdigit():
+                # 🔥 FIXED: Added "message" field to satisfy Database Constraint
                 supabase.table('SupportBox').insert({
                     "email": user['email'], 
-                    "subject": context.user_data.get('stype', 'Other'), 
+                    "subject": subject, 
                     "order_id": lid, 
+                    "message": f"{subject} Request for Order #{lid}", # Default Message ထည့်ပေးလိုက်ပါသည်
                     "status": "Pending", 
                     "UserStatus": "unread"
                 }).execute()
@@ -337,7 +339,7 @@ async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {str(e)}")
         
-    await help_command(update, context); return ConversationHandler.END
+    await help_command(update, context); return ConversationHandler.E
 
 # =========================================
 # 🛠️ ADMIN COMMANDS (All Included)
