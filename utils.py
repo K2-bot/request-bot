@@ -34,7 +34,8 @@ def get_text(lang, key, **kwargs):
     return TEXTS[lang_code].get(key, key).format(**kwargs)
 
 def format_currency(amount, currency):
-    if currency == 'MMK': return f"{amount * config.MMK_RATE:,.0f} Ks"
+    # 🔥 FIXED: Changed config.MMK_RATE to config.USD_TO_MMK
+    if currency == 'MMK': return f"{amount * config.USD_TO_MMK:,.0f} Ks"
     return f"${amount:.4f}"
 
 def calculate_cost(quantity, service_data):
