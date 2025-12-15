@@ -298,17 +298,22 @@ def poll_affiliate():
         except: pass
         time.sleep(10)
 
+# 5. SUPPORT POLLER (Manual Notification Only)
 def poll_supportbox_worker():
     while True:
         try:
+            # Fetch Pending Tickets
             tickets = supabase.table("SupportBox").select("*").eq("status", "Pending").execute().data or []
+            
             for t in tickets:
-                lid = t.get("order_id")
-                subject = t.get("subject")
-                email = t.get("email")
-                msg_content = t.get("message", "-") # User ရေးလိုက်တဲ့ message (Ex: 718 Speed up)
+                print(f"🎫 Processing Ticket #{t['id']}") # Debug Print
+                
+                lid = str(t.get("order_id", ""))
+                subject = str(t.get("subject", "No Subject"))
+                email = str(t.get("email", "No Email"))
+                msg_content = str(t.get("message", "-"))
 
-                # Message Format (As requested)
+                # Message Format
                 msg = (
                     f"📢 <b>New Support Ticket</b>\n"
                     f"ID - {t['id']}\n"
@@ -324,11 +329,14 @@ def poll_supportbox_worker():
                 # Send to Support Group
                 send_log_retry(config.SUPPORT_GROUP_ID, msg)
                 
-                # Update Status to Processing
+                # Update Status to Processing (So it doesn't send again)
                 supabase.table("SupportBox").update({"status": "Processing"}).eq("id", t['id']).execute()
+                
         except Exception as e:
-            print(f"Support Error: {e}")
+            print(f"Support Poller Error: {e}")
+            
         time.sleep(10)
+        
 # 6. RATE CHECKER (Standard)
 def check_smmgen_rates_loop():
     while True:
