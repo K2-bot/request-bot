@@ -303,58 +303,31 @@ def poll_supportbox_worker():
         try:
             tickets = supabase.table("SupportBox").select("*").eq("status", "Pending").execute().data or []
             for t in tickets:
-                lid = t.get("order_id"); subject = t.get("subject")
-                
-                # Check Order
-                order_res = supabase.table("WebsiteOrders").select("supplier_order_id, status").eq("id", lid).execute().data
-                sup_id = None; order_status = "Unknown"
-                if order_res:
-                    sup_id = order_res[0].get("supplier_order_id"); order_status = order_res[0].get("status")
+                lid = t.get("order_id")
+                subject = t.get("subject")
+                email = t.get("email")
+                msg_content = t.get("message", "-") # User ရေးလိုက်တဲ့ message (Ex: 718 Speed up)
 
-                is_auto = False; reply_text = ""
+                # Message Format (As requested)
+                msg = (
+                    f"📢 <b>New Support Ticket</b>\n"
+                    f"ID - {t['id']}\n"
+                    f"Email - {email}\n"
+                    f"Subject - {html.escape(subject)}\n"
+                    f"Order ID - {lid}\n\n"
+                    f"Message:\n{html.escape(msg_content)}\n\n"
+                    f"Commands:\n"
+                    f"/Answer {t['id']} reply message\n"
+                    f"/Close {t['id']}"
+                )
                 
-                # 🤖 Auto API Check
-                if subject in ["Refill", "Cancel"] and sup_id and sup_id != "0":
-                    action = 'refill' if subject == 'Refill' else 'cancel'
-                    try:
-                        # Send to SMMGen API
-                        res = requests.post(config.SMM_API_URL, data={'key': config.SMM_API_KEY, 'action': action, 'order': sup_id}, timeout=10).json()
-                        
-                        if 'error' in res: 
-                            reply_text = f"⚠️ API Error: {res['error']}"
-                            is_auto = False # Admin needs to see this
-                        else: 
-                            reply_text = parse_smm_support_response(res, subject, lid)
-                            is_auto = True
-                    except Exception as e:
-                        reply_text = f"⚠️ Connection Error: {str(e)}"
-                        is_auto = False
+                # Send to Support Group
+                send_log_retry(config.SUPPORT_GROUP_ID, msg)
                 
-                elif order_status in ["Canceled", "Refunded", "Fail"]:
-                    reply_text = f"❌ Order is {order_status}. Request Rejected."; is_auto = True
-                else:
-                    reply_text = ""; is_auto = False # Manual Check needed
-
-                # Notification
-                if is_auto:
-                    # Auto Reply & Close
-                    supabase.table("SupportBox").update({"reply_text": reply_text, "status": "Replied", "updated_at": datetime.now().isoformat()}).eq("id", t['id']).execute()
-                    send_log_retry(config.SUPPORT_GROUP_ID, f"✅ <b>Auto Support:</b> Ticket #{t['id']}\nAction: {subject}\nResult: {reply_text}")
-                else:
-                    # Notify Admin
-                    msg = (
-                        f"📢 <b>New Support Ticket</b>\n"
-                        f"ID - {t['id']}\n"
-                        f"Email - {t['email']}\n"
-                        f"Subject - {html.escape(subject)}\n"
-                        f"Order ID - {lid}\n\n"
-                        f"Commands:\n"
-                        f"/Answer {t['id']} message\n"
-                        f"/Close {t['id']}"
-                    )
-                    send_log_retry(config.SUPPORT_GROUP_ID, msg)
-                    supabase.table("SupportBox").update({"status": "Processing"}).eq("id", t['id']).execute()
-        except: pass
+                # Update Status to Processing
+                supabase.table("SupportBox").update({"status": "Processing"}).eq("id", t['id']).execute()
+        except Exception as e:
+            print(f"Support Error: {e}")
         time.sleep(10)
 # 6. RATE CHECKER (Standard)
 def check_smmgen_rates_loop():
