@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 import config
 from db import supabase, get_user
 from utils import get_text, format_currency, calculate_cost, format_for_user
-import 'time
+import time
 
 def notify_group(chat_id, text):
     try: requests.post(f"https://api.telegram.org/bot{config.BOT_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
@@ -666,7 +666,6 @@ async def admin_order_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
     
-    # 1. Get Bot Username
     try:
         bot_info = await context.bot.get_me()
         bot_username = bot_info.username
@@ -674,7 +673,6 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"❌ Error getting bot info: {e}")
         return
 
-    # 2. Fetch Services
     svcs = supabase.table('services').select("*").neq('type', 'Demo').range(0, 2000).order('id', desc=False).execute().data
     
     if not svcs:
@@ -686,7 +684,6 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"📢 Processing {len(svcs)} services...\n⏳ Delay: 3s per message")
     
-    # 3. Process Categories
     for c, items in cats.items():
         chunks = []
         current_chunk = []
@@ -696,12 +693,22 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         header = f"📂 <b>{html.escape(c)}</b>\n➖➖➖➖➖➖➖➖➖➖\n\n"
         footer = "➖➖➖➖➖➖➖➖➖➖\n👇 Click blue text to Order"
         
-        # Chunking Logic
         for s in items:
-            icon = "⚡"
             name_lower = s['service_name'].lower()
-            if "refill" in name_lower and "no refill" not in name_lower: icon = "♻️"
-            elif "no refill" in name_lower: icon = "🚫"
+            
+            # 🔥 ICON LOGIC
+            # 1. Check "no refill" first -> 🚫
+            if "no refill" in name_lower: 
+                icon = "🚫"
+            
+            # 2. Check "refill", "lifetime", "guaranteed", "auto" -> ♻️
+            # (Removed 'non drop' from here as requested)
+            elif any(x in name_lower for x in ["refill", "lifetime", "guaranteed", "auto"]): 
+                icon = "♻️"
+                
+            # 3. Default (Includes 'non drop' if no refill mentioned) -> ⚡️
+            else: 
+                icon = "⚡️"
             
             line = f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
@@ -715,14 +722,16 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         if current_chunk: chunks.append(current_chunk)
         
-        # 4. Sending Logic
         for batch in chunks:
             msg_text = header
             for s in batch:
-                icon = "⚡"
                 name_lower = s['service_name'].lower()
-                if "refill" in name_lower and "no refill" not in name_lower: icon = "♻️"
-                elif "no refill" in name_lower: icon = "🚫"
+                
+                # Re-apply Logic
+                if "no refill" in name_lower: icon = "🚫"
+                # Removed 'non drop' here too
+                elif any(x in name_lower for x in ["refill", "lifetime", "guaranteed", "auto"]): icon = "♻️"
+                else: icon = "⚡️"
                 
                 msg_text += f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
@@ -733,48 +742,25 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 sent_msg = None
-                
-                # Case A: Edit Existing
                 if msg_id and msg_id != 0:
                     try:
-                        await context.bot.edit_message_text(
-                            chat_id=config.CHANNEL_ID, 
-                            message_id=msg_id, 
-                            text=msg_text, 
-                            parse_mode='HTML', 
-                            disable_web_page_preview=True
-                        )
+                        await context.bot.edit_message_text(chat_id=config.CHANNEL_ID, message_id=msg_id, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
                         print(f"✅ Edited Msg ID {msg_id} for {c[:20]}...")
                     except Exception as edit_err:
-                        # If edit fails (e.g., message deleted), Try Sending New
                         print(f"⚠️ Edit Failed (ID {msg_id}): {edit_err}. Sending New...")
-                        sent_msg = await context.bot.send_message(
-                            chat_id=config.CHANNEL_ID, 
-                            text=msg_text, 
-                            parse_mode='HTML', 
-                            disable_web_page_preview=True
-                        )
-                
-                # Case B: Send New
+                        sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
                 else:
-                    sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, 
-                        text=msg_text, 
-                        parse_mode='HTML', 
-                        disable_web_page_preview=True
-                    )
+                    sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
                     print(f"✅ Sent New Msg for {c[:20]}...")
 
-                # Update DB if new message sent
                 if sent_msg:
                     for s in batch:
                         supabase.table('services').update({'channel_msg_id': sent_msg.message_id}).eq('id', s['id']).execute()
             
             except Exception as e:
-                # 🔥 PRINT ERROR TO CONSOLE
                 print(f"❌ CRITICAL POST ERROR [{c}]: {e}")
             
-            # 🔥 3 SECONDS DELAY
-            time.sleep(1) 
+            time.sleep(3) 
                 
     await update.message.reply_text("✅ All Done.")
     
