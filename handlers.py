@@ -129,7 +129,7 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += (f"🆔 <code>{display_id}</code> | 🔢 {o['quantity']} | ✅ {o['status']}\n"
                         f"📦 {svc_name}\n\n")
             else:
-                msg += f"❌ Order {oid}: Not found.\n"
+                msg += f"❌ Unable to Process:\n Order {oid} - Not found or does not belong to your account."
         except: pass
         
     await update.message.reply_text(msg if msg else "❌ Not found.", parse_mode='HTML')
