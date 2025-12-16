@@ -774,7 +774,7 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 print(f"❌ CRITICAL POST ERROR [{c}]: {e}")
             
             # 🔥 3 SECONDS DELAY
-            time.sleep(3) 
+            time.sleep(1) 
                 
     await update.message.reply_text("✅ All Done.")
     
