@@ -1,5 +1,6 @@
 import config
 import html
+import re
 
 TEXTS = {
     'en': {
@@ -50,17 +51,26 @@ def format_currency(amount, currency):
     if currency == 'MMK': return f"{amount * config.USD_TO_MMK:,.0f} Ks"
     return f"${amount:.4f}"
 
-# 🔥 FIXED: Calculation based on Per Quantity
+# 💰 For User Order Cost (Sell Price * Quantity)
 def calculate_cost(quantity, service_data):
-    # Get Per Quantity (Default to 1000 if missing or 0)
     per_qty = int(service_data.get('per_quantity', 1000))
     if per_qty < 1: per_qty = 1000
-    
     sell_price = float(service_data.get('sell_price', 0))
-    
-    # Formula: (Price / Per_Qty) * User_Qty
     cost = (sell_price / per_qty) * quantity
-    return round(cost, 6) # 6 decimals for precision
+    return round(cost, 6)
+
+# 🔥 NEW: For Service Price Setting (Buy Price -> Sell Price)
+# (Used by handlers.py /add and jobs.py /rate_check)
+def calculate_sell_price(buy_price, service_name):
+    if 'view' in service_name.lower():
+        return round(buy_price * 3.0, 4) # View = 3x
+    return round(buy_price * 1.4, 4)     # Others = 1.4x
+
+# 🧹 Name Cleaner Helper
+def clean_service_name(raw_name):
+    name = re.sub(r"\s*~\s*Max\s*[\d\.]+[KkMmBb]?\s*", "", raw_name, flags=re.IGNORECASE)
+    name = re.sub(r"\s*~\s*[\d\.]+[KkMm]?/days?\s*", "", name, flags=re.IGNORECASE)
+    return name.strip()
 
 def format_for_user(service, lang='en', curr='USD'):
     name = html.escape(service.get('service_name', 'Unknown'))
