@@ -253,7 +253,11 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await help_command(update, context)
         return ConversationHandler.END
         
-    user = get_user(update.effective_user.id); cost = context.user_data['cost_usd']
+    user = get_user(update.effective_user.id)
+    cost = context.user_data['cost_usd'] # Already calculated correctly by utils.calculate_cost
+    svc = context.user_data['order_svc']
+    qty = context.user_data['order_qty']
+    link = context.user_data['order_link']
     
     if float(user['balance_usd']) < cost:
         await query.edit_message_text(f"⚠️ <b>Insufficient Balance</b>\n\n💵 Cost: ${cost:.4f}\n💰 Your Balance: ${user['balance_usd']:.4f}\n\nPlease top up.", parse_mode='HTML')
@@ -261,14 +265,38 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
         
     try:
+        # 1. Deduct Balance
         new_bal = float(user['balance_usd']) - cost
         supabase.table('users').update({'balance_usd': new_bal}).eq('telegram_id', update.effective_user.id).execute()
         
-        o_data = {"email": user['email'], "service": context.user_data['order_svc']['service_name'], "link": context.user_data['order_link'], 
-                  "quantity": context.user_data['order_qty'], "sell_charge": cost, "status": "Pending", "UsedType": "NewOrder", 
-                  "supplier_service_id": context.user_data['order_svc']['service_id'], "supplier_name": "smmgen"}
+        # 2. 🔥 FIXED: Calculate Buy Charge based on Per Quantity
+        per_qty = int(svc.get('per_quantity', 1000))
+        if per_qty < 1: per_qty = 1000
+        
+        buy_price = float(svc.get('buy_price', 0))
+        buy_charge = (buy_price / per_qty) * qty # (Price / PerQty) * OrderQty
+        
+        # 3. Prepare Data
+        o_data = {
+            "email": user['email'],
+            "service": svc['service_name'],
+            "quantity": qty,
+            "link": link,
+            "day": 1,
+            "remain": qty,
+            "start_count": 0,
+            "buy_charge": round(buy_charge, 6),       # ✅ Correct Buy Charge
+            "sell_charge": round(cost, 6),            # ✅ Correct Sell Charge
+            "supplier_service_id": svc['service_id'],
+            "supplier_name": svc['source'],
+            "status": "Pending",
+            "UsedType": svc['use_type'],              # ✅ From Service Table
+            "supplier_order_id": 0
+        }
+        
         inserted = supabase.table('WebsiteOrders').insert(o_data).execute()
         await query.edit_message_text(f"✅ <b>Order Queued!</b>\nID: {inserted.data[0]['id']}", parse_mode='HTML')
+        
     except Exception as e:
         await query.edit_message_text(f"❌ <b>Error Occurred:</b>\n{str(e)}", parse_mode='HTML')
     
@@ -319,11 +347,14 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     if query.data == 'mass_no':
         await query.edit_message_text("🚫 Canceled.")
+        await help_command(update, context)
         return ConversationHandler.END
         
     user = get_user(update.effective_user.id); total = context.user_data['mass_total']
+    
     if float(user['balance_usd']) < total:
         await query.edit_message_text(f"⚠️ <b>Insufficient Balance</b>\nNeeded: ${total}\nHas: ${user['balance_usd']}", parse_mode='HTML')
+        await help_command(update, context)
         return ConversationHandler.END
         
     try:
@@ -331,25 +362,40 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         supabase.table('users').update({'balance_usd': new_bal}).eq('telegram_id', update.effective_user.id).execute()
         
         for o in context.user_data['mass_queue']:
-            # K2Boost vs SMMGen Logic
-            supplier = "k2boost" if o['svc'].get('source') == 'k2boost' else "smmgen"
-            sup_svc_id = "" if supplier == "k2boost" else o['svc']['service_id']
+            svc = o['svc']
+            qty = o['qty']
             
-            supabase.table('WebsiteOrders').insert({
-                "email": user['email'], 
-                "service": o['svc']['service_name'], 
-                "link": o['link'], 
-                "quantity": o['qty'], 
-                "sell_charge": o['cost'], 
-                "status": "Pending", 
-                "UsedType": "MassOrder", 
-                "supplier_service_id": sup_svc_id, 
-                "supplier_name": supplier
-            }).execute()
+            # 🔥 FIXED: Calculate Buy Charge based on Per Quantity
+            per_qty = int(svc.get('per_quantity', 1000))
+            if per_qty < 1: per_qty = 1000
+            
+            buy_price = float(svc.get('buy_price', 0))
+            buy_charge = (buy_price / per_qty) * qty
+            
+            o_data = {
+                "email": user['email'],
+                "service": svc['service_name'],
+                "quantity": qty,
+                "link": o['link'],
+                "day": 1,
+                "remain": qty,
+                "start_count": 0,
+                "buy_charge": round(buy_charge, 6),       # ✅ Correct Buy Charge
+                "sell_charge": round(o['cost'], 6),       # ✅ Correct Sell Charge
+                "supplier_service_id": svc['service_id'],
+                "supplier_name": svc['source'],
+                "status": "Pending",
+                "UsedType": svc['use_type'],
+                "supplier_order_id": 0
+            }
+            
+            supabase.table('WebsiteOrders').insert(o_data).execute()
             
         await query.edit_message_text("✅ <b>Mass Order Queued!</b>", parse_mode='HTML')
+        
     except Exception as e: 
         await query.edit_message_text(f"❌ Error: {e}")
+    
     await help_command(update, context); return ConversationHandler.END
 
 # ... (Support & Admin Commands with parse_mode='HTML') ...
@@ -373,37 +419,54 @@ async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid Input.")
             return ConversationHandler.END
 
+        # User Input IDs
         input_ids = [x.strip() for x in raw_text.split(',') if x.strip().isdigit()]
         if not input_ids:
             await update.message.reply_text("❌ No valid numbers found.")
             return ConversationHandler.END
 
-        # Check Local ID OR Supplier Order ID
+        # Fetch valid orders from DB (Check both Local ID & Supplier ID)
         valid_orders = supabase.table('WebsiteOrders').select("id, supplier_order_id").or_(f"id.in.({','.join(input_ids)}),supplier_order_id.in.({','.join(input_ids)})").eq("email", user['email']).execute().data
         
-        valid_local_ids = []
-        found_inputs = []
-        
-        for o in valid_orders:
-            valid_local_ids.append(str(o['id']))
-            if str(o['id']) in input_ids: found_inputs.append(str(o['id']))
-            if str(o['supplier_order_id']) in input_ids: found_inputs.append(str(o['supplier_order_id']))
+        # 🔥 FIXED LOGIC: Keep exact ID user typed if it's valid
+        confirmed_ids = []
+        for iid in input_ids:
+            # Check if this input ID matches ANY valid order's Local ID or Supplier ID
+            is_valid = False
+            for o in valid_orders:
+                if str(o['id']) == iid or str(o['supplier_order_id']) == iid:
+                    is_valid = True
+                    break
+            
+            if is_valid:
+                confirmed_ids.append(iid)
 
-        invalid_ids = list(set(input_ids) - set(found_inputs))
+        # Find which inputs were invalid
+        invalid_ids = list(set(input_ids) - set(confirmed_ids))
         
         if invalid_ids:
             error_msg = f"❌ <b>Unable to Process:</b>\nOrder {', '.join(invalid_ids)} - Not found or does not belong to your account.\n\nThank you for using our service!"
             await update.message.reply_text(error_msg, parse_mode='HTML')
             return ConversationHandler.END
 
-        if valid_local_ids:
-            joined_ids = ", ".join(valid_local_ids) # Store Local IDs for internal use
+        if confirmed_ids:
+            joined_ids = ", ".join(confirmed_ids) # Use the EXACT IDs user typed
             custom_msg = f"{joined_ids} {subject}"
-            supabase.table('SupportBox').insert({"email": user['email'], "subject": subject, "order_id": joined_ids, "message": custom_msg, "status": "Pending", "UserStatus": "unread"}).execute()
-            await update.message.reply_text(f"✅ Ticket Created for {len(valid_local_ids)} orders.")
+            
+            supabase.table('SupportBox').insert({
+                "email": user['email'], 
+                "subject": subject, 
+                "order_id": joined_ids, 
+                "message": custom_msg, 
+                "status": "Pending", 
+                "UserStatus": "unread"
+            }).execute()
+            
+            await update.message.reply_text(f"✅ Ticket Created for {len(confirmed_ids)} orders.")
             
     except Exception as e:
         await update.message.reply_text(f"⚠️ Error: {str(e)}")
+        
     await help_command(update, context); return ConversationHandler.END
 
 # ... (Admin commands similar to before, ensure HTML mode) ...
