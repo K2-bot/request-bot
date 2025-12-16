@@ -42,7 +42,6 @@ TEXTS = {
         )
     }
 }
-
 def get_text(lang, key, **kwargs):
     lang_code = lang if lang in ['en', 'mm'] else 'en'
     return TEXTS[lang_code].get(key, key).format(**kwargs)
@@ -51,18 +50,25 @@ def format_currency(amount, currency):
     if currency == 'MMK': return f"{amount * config.USD_TO_MMK:,.0f} Ks"
     return f"${amount:.4f}"
 
+# 🔥 FIXED: Calculation based on Per Quantity
 def calculate_cost(quantity, service_data):
+    # Get Per Quantity (Default to 1000 if missing or 0)
     per_qty = int(service_data.get('per_quantity', 1000))
-    if per_qty == 0: per_qty = 1000
+    if per_qty < 1: per_qty = 1000
+    
     sell_price = float(service_data.get('sell_price', 0))
-    return (quantity / per_qty) * sell_price
+    
+    # Formula: (Price / Per_Qty) * User_Qty
+    cost = (sell_price / per_qty) * quantity
+    return round(cost, 6) # 6 decimals for precision
 
 def format_for_user(service, lang='en', curr='USD'):
     name = html.escape(service.get('service_name', 'Unknown'))
     price_usd = float(service.get('sell_price', 0))
     min_q = service.get('min', 0)
     max_q = service.get('max', 0)
-    per_qty = service.get('per_quantity', 1000)
+    per_qty = int(service.get('per_quantity', 1000)) # Show Per Quantity
+    
     raw_note = service.get('note_mm') if lang == 'mm' else service.get('note_eng')
     desc = html.escape((raw_note or "").replace("\\n", "\n").strip())
     price_display = format_currency(price_usd, curr)
