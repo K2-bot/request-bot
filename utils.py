@@ -36,8 +36,7 @@ TEXTS = {
             "6️⃣ /support - အကူအညီတောင်းရန်\n"
             "7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n"
             "🌐 Website - k2boost.org\n"
-            "@k2boostservice\n"
-            "https://t.me/k2_boost"
+            "@k2boostservice"
         )
     }
 }
