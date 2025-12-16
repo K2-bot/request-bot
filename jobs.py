@@ -8,6 +8,7 @@ import traceback
 from db import supabase
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from utils import parse_smm_support_response, clean_service_name, calculate_sell_price # 🔥 Import Here
 
 # 🔥 SAFE LOGGING (HTML)
 def send_log_retry(chat_id, text):
@@ -300,16 +301,27 @@ def check_smmgen_rates_loop():
         try:
             payload = {'key': config.SMM_API_KEY, 'action': 'services'}
             res = requests.post(config.SMM_API_URL, data=payload, timeout=30).json()
-            local = supabase.table("services").select("id, service_id, buy_price, service_name").execute().data or []
+            local = supabase.table("services").select("id, service_id, buy_price, sell_price, service_name").execute().data or []
+            
             for ls in local:
                 api_svc = next((s for s in res if str(s['service']) == str(ls['service_id'])), None)
                 if api_svc:
                     api_rate = float(api_svc['rate'])
-                    old_rate = float(ls['buy_price'])
-                    if abs(old_rate - api_rate) > 0.0001:
+                    old_buy = float(ls['buy_price'])
+                    current_sell = float(ls['sell_price'])
+                    
+                    # Update if price changed OR if we are losing money (Buy > Sell)
+                    if abs(old_buy - api_rate) > 0.0001 or api_rate >= current_sell:
+                        
+                        # 🔥 USE UTILS (Centralized Logic)
                         new_sell = calculate_sell_price(api_rate, ls['service_name'])
-                        supabase.table("services").update({"buy_price": api_rate, "sell_price": new_sell}).eq("id", ls['id']).execute()
-                        msg = f"📉📈 <b>Price Updated</b>\n🆔 {ls['service_id']}\n📦 {ls['service_name']}\n💵 Buy: {old_rate} ➝ {api_rate}\n💰 Sell Updated: {new_sell}"
+                        
+                        supabase.table("services").update({
+                            "buy_price": api_rate,
+                            "sell_price": new_sell
+                        }).eq("id", ls['id']).execute()
+                        
+                        msg = f"📉📈 <b>Price Updated</b>\n🆔 {ls['service_id']}\n📦 {ls['service_name']}\n💵 Buy: {old_buy} ➝ {api_rate}\n💰 Sell: {current_sell} ➝ {new_sell}"
                         send_log_retry(config.REPORT_GROUP_ID, msg)
         except Exception as e: print(f"❌ Rate Check Error: {e}")
         time.sleep(3600)
