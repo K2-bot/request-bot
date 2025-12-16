@@ -35,8 +35,10 @@ TEXTS = {
             "5️⃣ /check ID - Status စစ်ရန်\n"
             "6️⃣ /support - အကူအညီတောင်းရန်\n"
             "7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n"
-            "🌐 Website - k2boost.org\n"
-            "@k2boostservice"
+            "🌐 <b>Website:</b> <a href='https://k2boost.org'>k2boost.org</a>\n"
+            "📢 <b>Channel:</b> <a href='https://t.me/k2_boost'>K2 Boost Channel</a>\n"
+            "💬 <b>Support:</b> @k2boostservice\n\n"
+            "⚠️ <b>ငွေဖြည့်ရန်:</b> Website သို့သွား၍ Topup ပြုလုပ်နိုင်ပါသည်။"
         )
     }
 }
