@@ -479,35 +479,78 @@ def calculate_sell_price_handler(buy_price, service_name):
     if 'view' in service_name.lower(): return round(buy_price * 3.0, 4)
     return round(buy_price * 1.4, 4)
 
+# 🔥 ADMIN BULK ADD (Updated with GoodsName)
 async def admin_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
+    
+    # Check Args (Needs at least Start, End, and Type)
     if len(context.args) < 3:
-        await update.message.reply_text("⚠️ Usage: <code>/add StartID EndID Type</code>", parse_mode='HTML')
+        await update.message.reply_text(
+            "⚠️ Usage: /add <Start> <End> <Type> | <GoodsName>\n"
+            "Ex: /add 16310 16319 Telegram Premium | Tele_Prem_Goods", 
+            parse_mode='Markdown'
+        )
         return
+
     try:
-        start_id = int(context.args[0]); end_id = int(context.args[1])
-        custom_type = " ".join(context.args[2:]) 
-        await update.message.reply_text("🔄 Fetching from SMMGen API...")
+        start_id = int(context.args[0])
+        end_id = int(context.args[1])
+        
+        # 🔥 Parsing Type and GoodsName using '|' separator
+        raw_rest = " ".join(context.args[2:])
+        if "|" in raw_rest:
+            custom_type, goods_name = raw_rest.split("|", 1)
+            custom_type = custom_type.strip()
+            goods_name = goods_name.strip()
+        else:
+            custom_type = raw_rest.strip()
+            goods_name = custom_type # Separator မပါရင် Type နဲ့တူတူပဲ ထားလိုက်မယ်
+            
+        await update.message.reply_text(f"🔄 Fetching from SMMGen API...\nType: {custom_type}\nGoods: {goods_name}")
+        
+        # 1. Fetch API
         res = requests.post(config.SMM_API_URL, data={'key': config.SMM_API_KEY, 'action': 'services'}).json()
         targets = [s for s in res if start_id <= int(s['service']) <= end_id]
-        if not targets: await update.message.reply_text("❌ No services found.")
+        
+        if not targets:
+            await update.message.reply_text("❌ No services found.")
+            return
+
         added_count = 0
         for item in targets:
             s_id = str(item['service'])
+            
+            # Check Exists
             exists = supabase.table("services").select("id").eq("service_id", s_id).execute().data
             if exists: continue 
-            final_name = clean_service_name_handler(item['name'])
+            
+            # Utils Logic
+            final_name = clean_service_name(item['name']) # from utils
             buy_price = float(item['rate'])
-            sell_price = calculate_sell_price_handler(buy_price, final_name)
+            sell_price = calculate_sell_price(buy_price, final_name) # from utils
             api_type = item.get('type', 'Default') 
+            
+            # Insert to DB (Included "GoodsName")
             supabase.table("services").insert({
-                "service_id": s_id, "service_name": final_name, "category": item['category'], "type": custom_type,
-                "min": int(item['min']), "max": int(item['max']), "buy_price": buy_price, "sell_price": sell_price,
-                "use_type": api_type, "source": "smmgen", "per_quantity": 1000
+                "service_id": s_id, 
+                "service_name": final_name, 
+                "category": item['category'], 
+                "type": custom_type,
+                "min": int(item['min']), 
+                "max": int(item['max']), 
+                "buy_price": buy_price, 
+                "sell_price": sell_price,
+                "use_type": api_type, 
+                "source": "smmgen", 
+                "per_quantity": 1000,
+                "GoodsName": goods_name # 🔥 Added GoodsName
             }).execute()
             added_count += 1
-        await update.message.reply_text(f"✅ <b>Success!</b>\nAdded {added_count} services.\nType: {custom_type}", parse_mode='HTML')
-    except Exception as e: await update.message.reply_text(f"❌ Error: {str(e)}")
+            
+        await update.message.reply_text(f"✅ Success!\nAdded {added_count} services.\nType: {custom_type}\nGoodsName: {goods_name}", parse_mode='Markdown')
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 # ... (Keep existing admin commands, ensuring HTML parse mode) ...
 async def admin_answer_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
