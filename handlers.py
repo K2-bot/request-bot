@@ -447,7 +447,7 @@ async def sup_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if invalid_ids:
             error_msg = f"❌ <b>Unable to Process:</b>\nOrder {', '.join(invalid_ids)} - Not found or does not belong to your account.\n\nThank you for using our service!"
             await update.message.reply_text(error_msg, parse_mode='HTML')
-            return ConversationHandler.END
+            await help_command(update, context); return ConversationHandler.END
 
         if confirmed_ids:
             joined_ids = ", ".join(confirmed_ids) # Use the EXACT IDs user typed
@@ -659,47 +659,124 @@ async def admin_order_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"❌ Order {oid} Canceled & Refunded.")
     except: pass
 
+# ... (Previous Imports) ...
+
+# 🔥 ADMIN POST (With 3s Delay & Error Print)
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
     
-    # Fetch Non-Demo Services
-    svcs = supabase.table('services').select("*").neq('type', 'Demo').order('id', desc=False).execute().data
+    # 1. Get Bot Username
+    try:
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+    except Exception as e:
+        print(f"❌ Error getting bot info: {e}")
+        return
+
+    # 2. Fetch Services
+    svcs = supabase.table('services').select("*").neq('type', 'Demo').range(0, 2000).order('id', desc=False).execute().data
+    
+    if not svcs:
+        await update.message.reply_text("❌ No services found.")
+        return
+
     cats = {}
     for s in svcs: cats.setdefault(s['category'], []).append(s)
     
-    await update.message.reply_text(f"📢 Posting {len(svcs)} services...")
+    await update.message.reply_text(f"📢 Processing {len(svcs)} services...\n⏳ Delay: 3s per message")
     
+    # 3. Process Categories
     for c, items in cats.items():
-        msg = f"📂 <b>{html.escape(c)}</b>\n➖➖➖➖➖➖➖➖➖➖\n\n"
+        chunks = []
+        current_chunk = []
+        current_len = 0
+        limit = 3800
         
+        header = f"📂 <b>{html.escape(c)}</b>\n➖➖➖➖➖➖➖➖➖➖\n\n"
+        footer = "➖➖➖➖➖➖➖➖➖➖\n👇 Click blue text to Order"
+        
+        # Chunking Logic
         for s in items:
-            icon = "♻️" if "refill" in s['service_name'].lower() else "⚡"
-            if "no refill" in s['service_name'].lower(): icon = "🚫"
+            icon = "⚡"
+            name_lower = s['service_name'].lower()
+            if "refill" in name_lower and "no refill" not in name_lower: icon = "♻️"
+            elif "no refill" in name_lower: icon = "🚫"
             
-            msg += f"{icon} ID:{s['id']} - {html.escape(s['service_name'])}\n\n"
+            line = f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
-        msg += "➖➖➖➖➖➖➖➖➖➖\n👇 Click blue text to Order"
+            if current_len + len(line) > limit:
+                chunks.append(current_chunk)
+                current_chunk = []
+                current_len = 0
+            
+            current_chunk.append(s)
+            current_len += len(line)
+            
+        if current_chunk: chunks.append(current_chunk)
         
-        # Check first item to see if msg_id exists
-        first_svc = items[0]
-        msg_id = first_svc.get('channel_msg_id')
-        
-        try:
-            if msg_id and msg_id != 0:
-                # Update existing message
-                await context.bot.edit_message_text(chat_id=config.CHANNEL_ID, message_id=msg_id, text=msg, parse_mode='HTML', disable_web_page_preview=True)
-            else:
-                # Send new message
-                sent = await context.bot.send_message(config.CHANNEL_ID, text=msg, parse_mode='HTML', disable_web_page_preview=True)
-                # Save Msg ID to all items in this category
-                for s in items:
-                    supabase.table('services').update({'channel_msg_id': sent.message_id}).eq('id', s['id']).execute()
+        # 4. Sending Logic
+        for batch in chunks:
+            msg_text = header
+            for s in batch:
+                icon = "⚡"
+                name_lower = s['service_name'].lower()
+                if "refill" in name_lower and "no refill" not in name_lower: icon = "♻️"
+                elif "no refill" in name_lower: icon = "🚫"
+                
+                msg_text += f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
-            time.sleep(2) # Prevent FloodWait
-        except Exception as e:
-            print(f"Post Error: {e}")
+            msg_text += footer
             
-    await update.message.reply_text("✅ Done.")
+            first_svc = batch[0]
+            msg_id = first_svc.get('channel_msg_id')
+            
+            try:
+                sent_msg = None
+                
+                # Case A: Edit Existing
+                if msg_id and msg_id != 0:
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=config.CHANNEL_ID, 
+                            message_id=msg_id, 
+                            text=msg_text, 
+                            parse_mode='HTML', 
+                            disable_web_page_preview=True
+                        )
+                        print(f"✅ Edited Msg ID {msg_id} for {c[:20]}...")
+                    except Exception as edit_err:
+                        # If edit fails (e.g., message deleted), Try Sending New
+                        print(f"⚠️ Edit Failed (ID {msg_id}): {edit_err}. Sending New...")
+                        sent_msg = await context.bot.send_message(
+                            chat_id=config.CHANNEL_ID, 
+                            text=msg_text, 
+                            parse_mode='HTML', 
+                            disable_web_page_preview=True
+                        )
+                
+                # Case B: Send New
+                else:
+                    sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, 
+                        text=msg_text, 
+                        parse_mode='HTML', 
+                        disable_web_page_preview=True
+                    )
+                    print(f"✅ Sent New Msg for {c[:20]}...")
+
+                # Update DB if new message sent
+                if sent_msg:
+                    for s in batch:
+                        supabase.table('services').update({'channel_msg_id': sent_msg.message_id}).eq('id', s['id']).execute()
+            
+            except Exception as e:
+                # 🔥 PRINT ERROR TO CONSOLE
+                print(f"❌ CRITICAL POST ERROR [{c}]: {e}")
+            
+            # 🔥 3 SECONDS DELAY
+            time.sleep(3) 
+                
+    await update.message.reply_text("✅ All Done.")
+    
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
     if context.args: supabase.table('users').update({'is_banned': True}).eq('email', context.args[0]).execute(); await update.message.reply_text("Banned.")
