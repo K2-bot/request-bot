@@ -555,17 +555,45 @@ async def admin_order_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
-    svcs = supabase.table('services').select("*").neq('type', 'Demo').range(0, 1500).order('id', desc=False).execute().data
+    
+    # Fetch Non-Demo Services
+    svcs = supabase.table('services').select("*").neq('type', 'Demo').order('id', desc=False).execute().data
     cats = {}
     for s in svcs: cats.setdefault(s['category'], []).append(s)
-    await update.message.reply_text(f"Posting {len(svcs)} services...")
+    
+    await update.message.reply_text(f"📢 Posting {len(svcs)} services...")
+    
     for c, items in cats.items():
-        msg = f"📂 <b>{c}</b>\n➖➖➖➖➖\n\n"
-        for s in items: msg += f"⚡ <a href='https://t.me/{(await context.bot.get_me()).username}?start=order_{s['id']}'>ID:{s['id']} - {s['service_name']}</a>\n\n"
-        try: await context.bot.send_message(config.CHANNEL_ID, text=msg, parse_mode='HTML', disable_web_page_preview=True); time.sleep(3)
-        except: pass
-    await update.message.reply_text("Done.")
-
+        msg = f"📂 <b>{html.escape(c)}</b>\n➖➖➖➖➖➖➖➖➖➖\n\n"
+        
+        for s in items:
+            icon = "♻️" if "refill" in s['service_name'].lower() else "⚡"
+            if "no refill" in s['service_name'].lower(): icon = "🚫"
+            
+            msg += f"{icon} ID:{s['id']} - {html.escape(s['service_name'])}\n\n"
+            
+        msg += "➖➖➖➖➖➖➖➖➖➖\n👇 Click blue text to Order"
+        
+        # Check first item to see if msg_id exists
+        first_svc = items[0]
+        msg_id = first_svc.get('channel_msg_id')
+        
+        try:
+            if msg_id and msg_id != 0:
+                # Update existing message
+                await context.bot.edit_message_text(chat_id=config.CHANNEL_ID, message_id=msg_id, text=msg, parse_mode='HTML', disable_web_page_preview=True)
+            else:
+                # Send new message
+                sent = await context.bot.send_message(config.CHANNEL_ID, text=msg, parse_mode='HTML', disable_web_page_preview=True)
+                # Save Msg ID to all items in this category
+                for s in items:
+                    supabase.table('services').update({'channel_msg_id': sent.message_id}).eq('id', s['id']).execute()
+            
+            time.sleep(2) # Prevent FloodWait
+        except Exception as e:
+            print(f"Post Error: {e}")
+            
+    await update.message.reply_text("✅ Done.")
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
     if context.args: supabase.table('users').update({'is_banned': True}).eq('email', context.args[0]).execute(); await update.message.reply_text("Banned.")
