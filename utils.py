@@ -36,13 +36,14 @@ TEXTS = {
             "5️⃣ /check ID - Status စစ်ရန်\n"
             "6️⃣ /support - အကူအညီတောင်းရန်\n"
             "7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n"
-            "🌐 <b>Website:</b> <a href='https://k2boost.org'>k2boost.org</a>\n"
-            "📢 <b>Channel:</b> <a href='https://t.me/k2_boost'>K2 Boost Channel</a>\n"
-            "💬 <b>Support:</b> @k2boostservice\n\n"
+            "🌐 Website: k2boost.org\n"
+            "📢 Channel: <a href='https://t.me/k2_boost'>K2 Boost Channel</a>\n"
+            "💬 Support: @k2boostservice\n\n"
             "⚠️ <b>ငွေဖြည့်ရန်:</b> Website သို့သွား၍ Topup ပြုလုပ်နိုင်ပါသည်။"
         )
     }
 }
+
 def get_text(lang, key, **kwargs):
     lang_code = lang if lang in ['en', 'mm'] else 'en'
     return TEXTS[lang_code].get(key, key).format(**kwargs)
@@ -51,7 +52,6 @@ def format_currency(amount, currency):
     if currency == 'MMK': return f"{amount * config.USD_TO_MMK:,.0f} Ks"
     return f"${amount:.4f}"
 
-# 💰 For User Order Cost (Sell Price * Quantity)
 def calculate_cost(quantity, service_data):
     per_qty = int(service_data.get('per_quantity', 1000))
     if per_qty < 1: per_qty = 1000
@@ -59,32 +59,54 @@ def calculate_cost(quantity, service_data):
     cost = (sell_price / per_qty) * quantity
     return round(cost, 6)
 
-# 🔥 NEW: For Service Price Setting (Buy Price -> Sell Price)
-# (Used by handlers.py /add and jobs.py /rate_check)
 def calculate_sell_price(buy_price, service_name):
     if 'view' in service_name.lower():
-        return round(buy_price * 3.0, 4) # View = 3x
-    return round(buy_price * 1.4, 4)     # Others = 1.4x
+        return round(buy_price * 3.0, 4)
+    return round(buy_price * 1.4, 4)
 
 # 🧹 Name Cleaner Helper
 def clean_service_name(raw_name):
     name = re.sub(r"\s*~\s*Max\s*[\d\.]+[KkMmBb]?\s*", "", raw_name, flags=re.IGNORECASE)
     name = re.sub(r"\s*~\s*[\d\.]+[KkMm]?/days?\s*", "", name, flags=re.IGNORECASE)
+    # Remove fancy Unicode bold if possible, or just trim
     return name.strip()
+
+# 🔥 Helper to guess link type
+def get_link_prompt(service_name):
+    name = service_name.lower()
+    if any(x in name for x in ['follower', 'subscriber', 'member', 'page']):
+        return "Profile / Channel Link"
+    elif any(x in name for x in ['like', 'view', 'comment', 'reaction', 'share']):
+        return "Post / Video Link"
+    return "Link"
 
 def format_for_user(service, lang='en', curr='USD'):
     name = html.escape(service.get('service_name', 'Unknown'))
     price_usd = float(service.get('sell_price', 0))
     min_q = service.get('min', 0)
     max_q = service.get('max', 0)
-    per_qty = int(service.get('per_quantity', 1000)) # Show Per Quantity
+    per_qty = int(service.get('per_quantity', 1000))
+    
+    # New Fields
+    cat = html.escape(service.get('category', '-'))
+    stype = html.escape(service.get('type', '-'))
+    goods = html.escape(service.get('GoodsName', '-'))
     
     raw_note = service.get('note_mm') if lang == 'mm' else service.get('note_eng')
     desc = html.escape((raw_note or "").replace("\\n", "\n").strip())
     price_display = format_currency(price_usd, curr)
     
-    return (f"✅ <b>Selected Service</b>\n🔥 {name}\n🆔 <b>ID:</b> <code>{service.get('id')}</code>\n"
-            f"💵 <b>Price:</b> {price_display} (per {per_qty})\n📉 <b>Limit:</b> {min_q} - {max_q}\n\n📝 <b>Description:</b>\n{desc}")
+    return (
+        f"✅ <b>Selected Service</b>\n"
+        f"🔥 {name}\n"
+        f"🆔 <b>ID:</b> <code>{service.get('id')}</code>\n"
+        f"💵 <b>Price:</b> {price_display} (per {per_qty})\n"
+        f"📉 <b>Limit:</b> {min_q} - {max_q}\n\n"
+        f"📦 <b>Category:</b> {cat}\n"
+        f"🏷 <b>Type:</b> {stype}\n"
+        f"🛍 <b>Goods:</b> {goods}\n\n"
+        f"📝 <b>Description:</b>\n{desc}"
+    )
 
 def parse_smm_support_response(api_response, req_type, local_id):
     text = str(api_response).lower()
