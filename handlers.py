@@ -5,7 +5,127 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 import config
 from db import supabase, get_user
-from utils import get_text, format_currency, calculate_cost, format_for_user
+import config
+import html
+import re
+
+TEXTS = {
+    'en': {
+        'welcome_login': "✅ <b>Login Successful!</b>\nAccount: {email}",
+        'select_lang': "Please select your <b>Language</b>:",
+        'select_curr': "Please select your <b>Currency</b>:",
+        'setup_done': "🎉 <b>Setup Complete!</b>\n\nType /help to start.",
+        'balance_low': "⚠️ <b>Insufficient Balance</b>\n\nPlease top up on website: k2boost.org",
+        'confirm_order': "❓ <b>Confirm Order?</b>\n\n💵 Cost: {cost}\n✅ Yes to proceed.",
+        'order_success': "✅ <b>Order Queued!</b>\nID: {id}\nBalance: {bal}\n\n⚙️ Processing in background...",
+        'cancel': "🚫 Action Canceled.",
+        'help_title': "👤 <b>Account Info</b>",
+        'mass_confirm': "📊 <b>Mass Order Summary</b>\n\n✅ Valid: {valid}\n❌ Invalid: {invalid}\n💵 Total Cost: {cost}\n\nProceed?",
+        'help_msg': "📋 <b>Available Commands:</b>\n1️⃣ /services - View Prices\n2️⃣ /neworder - Place Order\n3️⃣ /massorder - Bulk Order\n4️⃣ /history - View History\n5️⃣ /check ID - Check Status\n6️⃣ /support - Ticket/Refill\n7️⃣ /settings - Language/Currency\n\n🌐 Website - k2boost.org"
+    },
+    'mm': {
+        'welcome_login': "✅ <b>Login ဝင်ခြင်း အောင်မြင်ပါသည်</b>\nအကောင့်: {email}",
+        'select_lang': "<b>ဘာသာစကား</b> ရွေးချယ်ပါ:",
+        'select_curr': "<b>ငွေကြေး</b> အမျိုးအစား ရွေးချယ်ပါ:",
+        'setup_done': "🎉 <b>ပြင်ဆင်မှု ပြီးစီးပါပြီ!</b>",
+        'balance_low': "⚠️ <b>လက်ကျန်ငွေ မလုံလောက်ပါ</b>\n\nWebsite တွင် ငွေဖြည့်ပါ: k2boost.org",
+        'confirm_order': "❓ <b>အော်ဒါတင်ရန် သေချာပါသလား?</b>\n\n💵 ကျသင့်ငွေ: {cost}\n✅ Yes ကိုနှိပ်၍ ဆက်သွားပါ။",
+        'order_success': "✅ <b>အော်ဒါ လက်ခံရရှိပါသည်!</b>\nID: {id}\nလက်ကျန်: {bal}\n\n⚙️ နောက်ကွယ်တွင် ဆက်လက်ဆောင်ရွက်နေပါပြီ...",
+        'cancel': "🚫 မလုပ်တော့ပါ။",
+        'help_title': "👤 <b>အကောင့် အချက်အလက်</b>",
+        'mass_confirm': "📊 <b>Mass Order အကျဉ်းချုပ်</b>\n\n✅ အောင်မြင်: {valid}\n❌ မှားယွင်း: {invalid}\n💵 စုစုပေါင်း: {cost}\n\nအော်ဒါတင်မှာ သေချာပါသလား?",
+        'help_msg': (
+            "📋 <b>အသုံးပြုနိုင်သော Commands:</b>\n"
+            "1️⃣ /services - ဈေးနှုန်းကြည့်ရန်\n"
+            "2️⃣ /neworder - မှာယူရန်\n"
+            "3️⃣ /massorder - အများကြီးမှာရန်\n"
+            "4️⃣ /history - မှတ်တမ်းကြည့်ရန်\n"
+            "5️⃣ /check ID - Status စစ်ရန်\n"
+            "6️⃣ /support - အကူအညီတောင်းရန်\n"
+            "7️⃣ /settings - ပြင်ဆင်ရန် (Lang/Curr)\n\n"
+            "🌐 Website: k2boost.org\n"
+            "📢 Channel: <a href='https://t.me/k2_boost'>K2 Boost Channel</a>\n"
+            "💬 Support: @k2boostservice\n\n"
+            "⚠️ <b>ငွေဖြည့်ရန်:</b> Website သို့သွား၍ Topup ပြုလုပ်နိုင်ပါသည်။"
+        )
+    }
+}
+
+def get_text(lang, key, **kwargs):
+    lang_code = lang if lang in ['en', 'mm'] else 'en'
+    return TEXTS[lang_code].get(key, key).format(**kwargs)
+
+def format_currency(amount, currency):
+    if currency == 'MMK': return f"{amount * config.USD_TO_MMK:,.0f} Ks"
+    return f"${amount:.4f}"
+
+def calculate_cost(quantity, service_data):
+    per_qty = int(service_data.get('per_quantity', 1000))
+    if per_qty < 1: per_qty = 1000
+    sell_price = float(service_data.get('sell_price', 0))
+    cost = (sell_price / per_qty) * quantity
+    return round(cost, 6)
+
+def calculate_sell_price(buy_price, service_name):
+    if 'view' in service_name.lower():
+        return round(buy_price * 3.0, 4)
+    return round(buy_price * 1.4, 4)
+
+# 🧹 Name Cleaner Helper
+def clean_service_name(raw_name):
+    name = re.sub(r"\s*~\s*Max\s*[\d\.]+[KkMmBb]?\s*", "", raw_name, flags=re.IGNORECASE)
+    name = re.sub(r"\s*~\s*[\d\.]+[KkMm]?/days?\s*", "", name, flags=re.IGNORECASE)
+    # Remove fancy Unicode bold if possible, or just trim
+    return name.strip()
+
+# 🔥 Helper to guess link type
+def get_link_prompt(service_name):
+    name = service_name.lower()
+    if any(x in name for x in ['follower', 'subscriber', 'member', 'page']):
+        return "Profile / Channel Link"
+    elif any(x in name for x in ['like', 'view', 'comment', 'reaction', 'share']):
+        return "Post / Video Link"
+    return "Link"
+
+def format_for_user(service, lang='en', curr='USD'):
+    name = html.escape(service.get('service_name', 'Unknown'))
+    price_usd = float(service.get('sell_price', 0))
+    min_q = service.get('min', 0)
+    max_q = service.get('max', 0)
+    per_qty = int(service.get('per_quantity', 1000))
+    
+    # New Fields
+    cat = html.escape(service.get('category', '-'))
+    stype = html.escape(service.get('type', '-'))
+    goods = html.escape(service.get('GoodsName', '-'))
+    
+    raw_note = service.get('note_mm') if lang == 'mm' else service.get('note_eng')
+    desc = html.escape((raw_note or "").replace("\\n", "\n").strip())
+    price_display = format_currency(price_usd, curr)
+    
+    return (
+        f"✅ <b>Selected Service</b>\n"
+        f"🔥 {name}\n"
+        f"🆔 <b>ID:</b> <code>{service.get('id')}</code>\n"
+        f"💵 <b>Price:</b> {price_display} (per {per_qty})\n"
+        f"📉 <b>Limit:</b> {min_q} - {max_q}\n\n"
+        f"📦 <b>Category:</b> {cat}\n"
+        f"🏷 <b>Type:</b> {stype}\n"
+        f"🛍 <b>Goods:</b> {goods}\n\n"
+        f"📝 <b>Description:</b>\n{desc}"
+    )
+
+def parse_smm_support_response(api_response, req_type, local_id):
+    text = str(api_response).lower()
+    if req_type == 'Refill':
+        if 'refill request has been received' in text or 'queued' in text: return "✅ Refill Queued."
+        elif 'canceled' in text or 'refunded' in text: return "❌ Order Canceled/Refunded."
+        return f"⚠️ {api_response}"
+    elif req_type == 'Cancel':
+        if 'cancellation queue' in text: return "✅ Cancellation Queued."
+        elif 'cannot be canceled' in text: return "❌ Cannot Cancel."
+        return f"⚠️ {api_response}"
+    return "✅ Sent."
 import time
 
 def notify_group(chat_id, text):
@@ -211,17 +331,31 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     svc = res.data[0]; context.user_data['order_svc'] = svc
     
-    prompt = f"🔗 <b>Enter Link for:</b>\n<i>{html.escape(svc['service_name'])}</i>"
+    # 🔥 FIXED: Specific Prompt + Cancel Button
+    link_type = get_link_prompt(svc['service_name']) # e.g. "Post Link" or "Profile Link"
+    prompt = f"🔗 <b>Enter {link_type} for:</b>\n<i>{html.escape(svc['service_name'])}</i>"
+    
     if svc.get('use_type') == 'Telegram username':
         prompt += "\n\n(Example: @username or https://t.me/...)"
     
-    await update.message.reply_text(f"{format_for_user(svc, db_user.get('language','en'), db_user.get('currency','USD'))}\n\n{prompt}", parse_mode='HTML')
+    # Cancel Button
+    kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]] # reusing 'no' for cancel
+    
+    await update.message.reply_text(
+        f"{format_for_user(svc, db_user.get('language','en'), db_user.get('currency','USD'))}\n\n{prompt}", 
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
     return config.ORDER_WAITING_LINK
 
 async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['order_link'] = update.message.text.strip()
     svc = context.user_data['order_svc']
-    await update.message.reply_text(f"📊 <b>Quantity</b>\nMin: {svc['min']} - Max: {svc['max']}", parse_mode='HTML')
+    
+    # Cancel Button here too
+    kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+    
+    await update.message.reply_text(f"📊 <b>Quantity</b>\nMin: {svc['min']} - Max: {svc['max']}", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
     return config.ORDER_WAITING_QTY
 
 async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -251,33 +385,27 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query; await query.answer()
     if query.data == 'no':
         await query.edit_message_text("🚫 Canceled.")
-        await help_command(update, context)
         return ConversationHandler.END
         
     user = get_user(update.effective_user.id)
-    cost = context.user_data['cost_usd'] # Already calculated correctly by utils.calculate_cost
+    cost = context.user_data['cost_usd']
     svc = context.user_data['order_svc']
     qty = context.user_data['order_qty']
     link = context.user_data['order_link']
     
     if float(user['balance_usd']) < cost:
         await query.edit_message_text(f"⚠️ <b>Insufficient Balance</b>\n\n💵 Cost: ${cost:.4f}\n💰 Your Balance: ${user['balance_usd']:.4f}\n\nPlease top up.", parse_mode='HTML')
-        await help_command(update, context)
         return ConversationHandler.END
         
     try:
-        # 1. Deduct Balance
         new_bal = float(user['balance_usd']) - cost
         supabase.table('users').update({'balance_usd': new_bal}).eq('telegram_id', update.effective_user.id).execute()
         
-        # 2. 🔥 FIXED: Calculate Buy Charge based on Per Quantity
         per_qty = int(svc.get('per_quantity', 1000))
         if per_qty < 1: per_qty = 1000
-        
         buy_price = float(svc.get('buy_price', 0))
-        buy_charge = (buy_price / per_qty) * qty # (Price / PerQty) * OrderQty
+        buy_charge = (buy_price / per_qty) * qty
         
-        # 3. Prepare Data
         o_data = {
             "email": user['email'],
             "service": svc['service_name'],
@@ -286,12 +414,12 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "day": 1,
             "remain": qty,
             "start_count": 0,
-            "buy_charge": round(buy_charge, 6),       # ✅ Correct Buy Charge
-            "sell_charge": round(cost, 6),            # ✅ Correct Sell Charge
+            "buy_charge": round(buy_charge, 6),
+            "sell_charge": round(cost, 6),
             "supplier_service_id": svc['service_id'],
             "supplier_name": svc['source'],
             "status": "Pending",
-            "UsedType": svc['use_type'],              # ✅ From Service Table
+            "UsedType": svc['use_type'],
             "supplier_order_id": 0
         }
         
@@ -484,11 +612,10 @@ def calculate_sell_price_handler(buy_price, service_name):
 async def admin_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
     
-    # Check Args (Needs at least Start, End, and Type)
     if len(context.args) < 3:
         await update.message.reply_text(
-            "⚠️ Usage: /add <Start> <End> <Type> | <GoodsName>\n"
-            "Ex: /add 16310 16319 Telegram Premium | Tele_Prem_Goods", 
+            "⚠️ Usage: `/add <Start> <End> <Type> | <GoodsName>`\n"
+            "Ex: `/add 16310 16319 Telegram Premium | Tele_Prem_Goods`", 
             parse_mode='Markdown'
         )
         return
@@ -496,20 +623,15 @@ async def admin_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         start_id = int(context.args[0])
         end_id = int(context.args[1])
-        
-        # 🔥 Parsing Type and GoodsName using '|' separator
         raw_rest = " ".join(context.args[2:])
         if "|" in raw_rest:
             custom_type, goods_name = raw_rest.split("|", 1)
-            custom_type = custom_type.strip()
-            goods_name = goods_name.strip()
+            custom_type = custom_type.strip(); goods_name = goods_name.strip()
         else:
-            custom_type = raw_rest.strip()
-            goods_name = custom_type # Separator မပါရင် Type နဲ့တူတူပဲ ထားလိုက်မယ်
+            custom_type = raw_rest.strip(); goods_name = custom_type
             
         await update.message.reply_text(f"🔄 Fetching from SMMGen API...\nType: {custom_type}\nGoods: {goods_name}")
         
-        # 1. Fetch API
         res = requests.post(config.SMM_API_URL, data={'key': config.SMM_API_KEY, 'action': 'services'}).json()
         targets = [s for s in res if start_id <= int(s['service']) <= end_id]
         
@@ -520,18 +642,15 @@ async def admin_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         added_count = 0
         for item in targets:
             s_id = str(item['service'])
-            
-            # Check Exists
             exists = supabase.table("services").select("id").eq("service_id", s_id).execute().data
             if exists: continue 
             
-            # Utils Logic
-            final_name = clean_service_name(item['name']) # from utils
+            # 🔥 THIS WILL WORK NOW (Imported)
+            final_name = clean_service_name(item['name']) 
             buy_price = float(item['rate'])
-            sell_price = calculate_sell_price(buy_price, final_name) # from utils
+            sell_price = calculate_sell_price(buy_price, final_name)
             api_type = item.get('type', 'Default') 
             
-            # Insert to DB (Included "GoodsName")
             supabase.table("services").insert({
                 "service_id": s_id, 
                 "service_name": final_name, 
@@ -544,15 +663,14 @@ async def admin_add_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "use_type": api_type, 
                 "source": "smmgen", 
                 "per_quantity": 1000,
-                "GoodsName": goods_name # 🔥 Added GoodsName
+                "GoodsName": goods_name
             }).execute()
             added_count += 1
             
-        await update.message.reply_text(f"✅ Success!\nAdded {added_count} services.\nType: {custom_type}\nGoodsName: {goods_name}", parse_mode='Markdown')
+        await update.message.reply_text(f"✅ **Success!**\nAdded {added_count} services.\nType: `{custom_type}`", parse_mode='Markdown')
         
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
-
 # ... (Keep existing admin commands, ensuring HTML parse mode) ...
 async def admin_answer_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.SUPPORT_GROUP_ID: return
@@ -662,7 +780,6 @@ async def admin_order_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ... (Previous Imports) ...
 
-# 🔥 ADMIN POST (With 3s Delay & Error Print)
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
     
@@ -674,10 +791,7 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     svcs = supabase.table('services').select("*").neq('type', 'Demo').range(0, 2000).order('id', desc=False).execute().data
-    
-    if not svcs:
-        await update.message.reply_text("❌ No services found.")
-        return
+    if not svcs: return await update.message.reply_text("❌ No services found.")
 
     cats = {}
     for s in svcs: cats.setdefault(s['category'], []).append(s)
@@ -696,19 +810,16 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for s in items:
             name_lower = s['service_name'].lower()
             
-            # 🔥 ICON LOGIC
-            # 1. Check "no refill" first -> 🚫
+            # 🔥 STRICT ICON LOGIC
+            # 1. No Refill -> 🚫
             if "no refill" in name_lower: 
                 icon = "🚫"
-            
-            # 2. Check "refill", "lifetime", "guaranteed", "auto" -> ♻️
-            # (Removed 'non drop' from here as requested)
+            # 2. Refill / Lifetime / Guaranteed -> ♻️
             elif any(x in name_lower for x in ["refill", "lifetime", "guaranteed", "auto"]): 
                 icon = "♻️"
-                
-            # 3. Default (Includes 'non drop' if no refill mentioned) -> ⚡️
+            # 3. Default -> ⚡
             else: 
-                icon = "⚡️"
+                icon = "⚡"
             
             line = f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
@@ -726,17 +837,12 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg_text = header
             for s in batch:
                 name_lower = s['service_name'].lower()
-                
-                # Re-apply Logic
                 if "no refill" in name_lower: icon = "🚫"
-                # Removed 'non drop' here too
                 elif any(x in name_lower for x in ["refill", "lifetime", "guaranteed", "auto"]): icon = "♻️"
-                else: icon = "⚡️"
-                
+                else: icon = "⚡"
                 msg_text += f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
             msg_text += footer
-            
             first_svc = batch[0]
             msg_id = first_svc.get('channel_msg_id')
             
@@ -746,8 +852,7 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     try:
                         await context.bot.edit_message_text(chat_id=config.CHANNEL_ID, message_id=msg_id, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
                         print(f"✅ Edited Msg ID {msg_id} for {c[:20]}...")
-                    except Exception as edit_err:
-                        print(f"⚠️ Edit Failed (ID {msg_id}): {edit_err}. Sending New...")
+                    except:
                         sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
                 else:
                     sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
