@@ -798,10 +798,14 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         bot_info = await context.bot.get_me()
         bot_username = bot_info.username
-    except: return
+    except Exception as e:
+        print(f"❌ Error getting bot info: {e}")
+        return
 
     svcs = supabase.table('services').select("*").neq('type', 'Demo').range(0, 2000).order('id', desc=False).execute().data
-    if not svcs: return await update.message.reply_text("❌ No services found.")
+    if not svcs:
+        await update.message.reply_text("❌ No services found.")
+        return
 
     cats = {}
     for s in svcs: cats.setdefault(s['category'], []).append(s)
@@ -814,13 +818,31 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         current_len = 0
         limit = 3800
         
-        header = f"📂 <b>{html.escape(c)}</b>\n➖➖➖➖➖➖➖➖➖➖\n\n"
+        # 🔥 HEADER CONSTRUCTION (With Type & Goods Subtitle)
+        first_svc = items[0]
+        sType = first_svc.get('type', '')
+        sGoods = first_svc.get('GoodsName', '')
+        
+        # Build Subtitle line: Type = ... | ...
+        sub_header = ""
+        if sType and sType != 'Default':
+            sub_header += f"Type = {html.escape(sType)}"
+        
+        if sGoods:
+            if sub_header: sub_header += f" | {html.escape(sGoods)}"
+            else: sub_header += f"Goods = {html.escape(sGoods)}"
+            
+        header = f"📂 <b>{html.escape(c)}</b>\n"
+        if sub_header:
+            header += f"{sub_header}\n" # Add the Subtitle line
+        header += "➖➖➖➖➖➖➖➖➖➖\n\n"
+        
         footer = "➖➖➖➖➖➖➖➖➖➖\n👇 Click blue text to Order"
         
         for s in items:
-            # 🔥 ICON FIX: Replace non-breaking spaces and normalize
+            # 🔥 ICON FIX (Space Removal + Normalization)
             raw_name = s['service_name']
-            clean_name = raw_name.replace('\xa0', ' ').replace('\u200b', '') # Remove hidden chars
+            clean_name = raw_name.replace('\xa0', ' ').replace('\u200b', '') # Clean hidden spaces
             normalized_name = unicodedata.normalize('NFKD', clean_name).encode('ascii', 'ignore').decode('utf-8').lower()
             
             # Logic
@@ -831,14 +853,8 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else: 
                 icon = "⚡"
             
-            # 🔥 ADDED TYPE & GOODS NAME
-            extra_info = ""
-            if s.get('type') and s.get('type') != 'Default':
-                extra_info += f" | 🏷 {html.escape(s['type'])}"
-            if s.get('GoodsName'):
-                extra_info += f" | 🛍 {html.escape(s['GoodsName'])}"
-            
-            line = f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>{extra_info}\n\n"
+            # 🔥 REMOVED INLINE TYPE/GOODS (Since it's in header now)
+            line = f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
             if current_len + len(line) > limit:
                 chunks.append(current_chunk)
@@ -862,17 +878,12 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif any(x in normalized_name for x in ["refill", "lifetime", "guaranteed", "auto"]): icon = "♻️"
                 else: icon = "⚡"
                 
-                # Re-add Extra Info
-                extra_info = ""
-                if s.get('type') and s.get('type') != 'Default': extra_info += f" | 🏷 {html.escape(s['type'])}"
-                if s.get('GoodsName'): extra_info += f" | 🛍 {html.escape(s['GoodsName'])}"
-                
-                msg_text += f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>{extra_info}\n\n"
+                msg_text += f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
             
             msg_text += footer
             
-            first_svc = batch[0]
-            msg_id = first_svc.get('channel_msg_id')
+            first_svc_batch = batch[0]
+            msg_id = first_svc_batch.get('channel_msg_id')
             
             try:
                 sent_msg = None
