@@ -804,6 +804,7 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for batch in chunks:
             msg_text = header
             for s in batch:
+                # Re-apply logic for batch loop
                 raw_name = s['service_name']
                 clean_name = raw_name.replace('\xa0', ' ').replace('\u200b', '')
                 normalized_name = unicodedata.normalize('NFKD', clean_name).encode('ascii', 'ignore').decode('utf-8').lower()
@@ -821,16 +822,36 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             try:
                 sent_msg = None
+                
+                # Case 1: ID ရှိရင် Edit လုပ်မယ်
                 if msg_id and msg_id != 0:
                     try:
-                        await context.bot.edit_message_text(chat_id=config.CHANNEL_ID, message_id=msg_id, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
+                        await context.bot.edit_message_text(
+                            chat_id=config.CHANNEL_ID, 
+                            message_id=msg_id, 
+                            text=msg_text, 
+                            parse_mode='HTML', 
+                            disable_web_page_preview=True
+                        )
                         print(f"✅ Edited Msg ID {msg_id}...")
-                    except:
-                        sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
+                    except Exception as e:
+                        err = str(e).lower()
+                        # စာသားမပြောင်းလဲရင် Error တက်တတ်တယ် (အဲ့ဒါဆို ဘာမှမလုပ်ဘူး)
+                        if "message is not modified" in err:
+                            print(f"🔹 No changes for ID {msg_id}")
+                        # Message ဖျက်ခံလိုက်ရရင်တော့ အသစ်ပြန်တင်မယ်
+                        elif "message to edit not found" in err or "message can't be edited" in err:
+                            print(f"⚠️ Msg Deleted. Sending New...")
+                            sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
+                        else:
+                            print(f"❌ Edit Error: {e}")
+
+                # Case 2: ID မရှိရင် အသစ်တင်မယ်
                 else:
                     sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
                     print(f"✅ Sent New Msg...")
 
+                # အသစ်တင်လိုက်ရမှသာ Database မှာ ID လိုက်ပြောင်းမယ်
                 if sent_msg:
                     for s in batch:
                         supabase.table('services').update({'channel_msg_id': sent_msg.message_id}).eq('id', s['id']).execute()
