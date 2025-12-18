@@ -331,15 +331,15 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     svc = res.data[0]; context.user_data['order_svc'] = svc
     
-    # 🔥 FIXED: Specific Prompt + Cancel Button
-    link_type = get_link_prompt(svc['service_name']) # e.g. "Post Link" or "Profile Link"
+    # Prompt with Cancel Button
+    link_type = get_link_prompt(svc['service_name'])
     prompt = f"🔗 <b>Enter {link_type} for:</b>\n<i>{html.escape(svc['service_name'])}</i>"
     
     if svc.get('use_type') == 'Telegram username':
         prompt += "\n\n(Example: @username or https://t.me/...)"
     
-    # Cancel Button
-    kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]] # reusing 'no' for cancel
+    # 🔥 Cancel Button (Inline)
+    kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
     
     await update.message.reply_text(
         f"{format_for_user(svc, db_user.get('language','en'), db_user.get('currency','USD'))}\n\n{prompt}", 
@@ -349,24 +349,36 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return config.ORDER_WAITING_LINK
 
 async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Check if user clicked cancel (handled by callbackQuery usually, but if they type text:)
+    if update.message.text == "/cancel":
+        await update.message.reply_text("🚫 Canceled.")
+        return ConversationHandler.END
+
     context.user_data['order_link'] = update.message.text.strip()
     svc = context.user_data['order_svc']
     
-    # Cancel Button here too
+    # 🔥 Cancel Button (Inline) for Quantity Step
     kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
     
-    await update.message.reply_text(f"📊 <b>Quantity</b>\nMin: {svc['min']} - Max: {svc['max']}", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(
+        f"📊 <b>Quantity</b>\nMin: {svc['min']} - Max: {svc['max']}", 
+        parse_mode='HTML', 
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
     return config.ORDER_WAITING_QTY
 
 async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: qty = int(update.message.text.strip())
     except: 
-        await update.message.reply_text("❌ Numbers only.")
+        # Show Error with Cancel Button again
+        kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+        await update.message.reply_text("❌ Numbers only. Try again:", reply_markup=InlineKeyboardMarkup(kb))
         return config.ORDER_WAITING_QTY
         
     svc = context.user_data['order_svc']
     if qty < svc['min'] or qty > svc['max']:
-        await update.message.reply_text(f"❌ Invalid Qty. ({svc['min']}-{svc['max']})")
+        kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+        await update.message.reply_text(f"❌ Invalid Qty. ({svc['min']}-{svc['max']})", reply_markup=InlineKeyboardMarkup(kb))
         return config.ORDER_WAITING_QTY
         
     context.user_data['order_qty'] = qty
@@ -429,7 +441,7 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"❌ <b>Error Occurred:</b>\n{str(e)}", parse_mode='HTML')
     
-    await help_command(update, context); return ConversationHandler.END
+    await help_command(update, context); return ConversationHandler.ENDEND
 
 async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 <b>Mass Order</b>\nFormat: <code>ID Link Qty</code>\n(Space separated, One per line)", parse_mode='HTML')
@@ -779,16 +791,13 @@ async def admin_order_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except: pass
 
 # ... (Previous Imports) ...
-
 async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != config.REPORT_GROUP_ID: return
     
     try:
         bot_info = await context.bot.get_me()
         bot_username = bot_info.username
-    except Exception as e:
-        print(f"❌ Error getting bot info: {e}")
-        return
+    except: return
 
     svcs = supabase.table('services').select("*").neq('type', 'Demo').range(0, 2000).order('id', desc=False).execute().data
     if not svcs: return await update.message.reply_text("❌ No services found.")
@@ -808,20 +817,27 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         footer = "➖➖➖➖➖➖➖➖➖➖\n👇 Click blue text to Order"
         
         for s in items:
-            name_lower = s['service_name'].lower()
+            # 🔥 ICON FIX: Replace non-breaking spaces and normalize
+            raw_name = s['service_name']
+            clean_name = raw_name.replace('\xa0', ' ').replace('\u200b', '') # Remove hidden chars
+            normalized_name = unicodedata.normalize('NFKD', clean_name).encode('ascii', 'ignore').decode('utf-8').lower()
             
-            # 🔥 STRICT ICON LOGIC
-            # 1. No Refill -> 🚫
-            if "no refill" in name_lower: 
+            # Logic
+            if "no refill" in normalized_name: 
                 icon = "🚫"
-            # 2. Refill / Lifetime / Guaranteed -> ♻️
-            elif any(x in name_lower for x in ["refill", "lifetime", "guaranteed", "auto"]): 
+            elif any(x in normalized_name for x in ["refill", "lifetime", "guaranteed", "auto"]): 
                 icon = "♻️"
-            # 3. Default -> ⚡
             else: 
                 icon = "⚡"
             
-            line = f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
+            # 🔥 ADDED TYPE & GOODS NAME
+            extra_info = ""
+            if s.get('type') and s.get('type') != 'Default':
+                extra_info += f" | 🏷 {html.escape(s['type'])}"
+            if s.get('GoodsName'):
+                extra_info += f" | 🛍 {html.escape(s['GoodsName'])}"
+            
+            line = f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>{extra_info}\n\n"
             
             if current_len + len(line) > limit:
                 chunks.append(current_chunk)
@@ -836,13 +852,24 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for batch in chunks:
             msg_text = header
             for s in batch:
-                name_lower = s['service_name'].lower()
-                if "no refill" in name_lower: icon = "🚫"
-                elif any(x in name_lower for x in ["refill", "lifetime", "guaranteed", "auto"]): icon = "♻️"
+                # Re-apply logic for batch loop
+                raw_name = s['service_name']
+                clean_name = raw_name.replace('\xa0', ' ').replace('\u200b', '')
+                normalized_name = unicodedata.normalize('NFKD', clean_name).encode('ascii', 'ignore').decode('utf-8').lower()
+                
+                if "no refill" in normalized_name: icon = "🚫"
+                elif any(x in normalized_name for x in ["refill", "lifetime", "guaranteed", "auto"]): icon = "♻️"
                 else: icon = "⚡"
-                msg_text += f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>\n\n"
+                
+                # Re-add Extra Info
+                extra_info = ""
+                if s.get('type') and s.get('type') != 'Default': extra_info += f" | 🏷 {html.escape(s['type'])}"
+                if s.get('GoodsName'): extra_info += f" | 🛍 {html.escape(s['GoodsName'])}"
+                
+                msg_text += f"{icon} <a href='https://t.me/{bot_username}?start=order_{s['id']}'>ID:{s['id']} - {html.escape(s['service_name'])}</a>{extra_info}\n\n"
             
             msg_text += footer
+            
             first_svc = batch[0]
             msg_id = first_svc.get('channel_msg_id')
             
@@ -851,19 +878,19 @@ async def admin_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if msg_id and msg_id != 0:
                     try:
                         await context.bot.edit_message_text(chat_id=config.CHANNEL_ID, message_id=msg_id, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
-                        print(f"✅ Edited Msg ID {msg_id} for {c[:20]}...")
+                        print(f"✅ Edited Msg ID {msg_id}...")
                     except:
                         sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
                 else:
                     sent_msg = await context.bot.send_message(chat_id=config.CHANNEL_ID, text=msg_text, parse_mode='HTML', disable_web_page_preview=True)
-                    print(f"✅ Sent New Msg for {c[:20]}...")
+                    print(f"✅ Sent New Msg...")
 
                 if sent_msg:
                     for s in batch:
                         supabase.table('services').update({'channel_msg_id': sent_msg.message_id}).eq('id', s['id']).execute()
             
             except Exception as e:
-                print(f"❌ CRITICAL POST ERROR [{c}]: {e}")
+                print(f"❌ CRITICAL POST ERROR: {e}")
             
             time.sleep(3) 
                 
