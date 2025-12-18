@@ -43,16 +43,22 @@ if __name__ == '__main__':
         fallbacks=[CommandHandler('cancel', handlers.cancel_op)]
     )
 
+    # 🔥 UPDATED NEW ORDER HANDLER (Added COMMENTS State)
     new_h = ConversationHandler(
         entry_points=[CommandHandler('neworder', handlers.new_order_start), CommandHandler('start', handlers.new_order_start, filters.Regex('order_'))],
         states={
             config.ORDER_WAITING_LINK: [
                 MessageHandler(filters.TEXT, handlers.new_order_link),
-                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$') # 🔥 Fix
+                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$')
             ],
             config.ORDER_WAITING_QTY: [
                 MessageHandler(filters.TEXT, handlers.new_order_qty),
-                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$') # 🔥 Fix
+                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$')
+            ],
+            # 🔥 New State for Custom Comments
+            config.ORDER_WAITING_COMMENTS: [
+                MessageHandler(filters.TEXT, handlers.new_order_comments),
+                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$')
             ],
             config.ORDER_CONFIRM: [CallbackQueryHandler(handlers.new_order_confirm)]
         },
@@ -64,7 +70,7 @@ if __name__ == '__main__':
         states={
             config.WAITING_MASS_INPUT: [
                 MessageHandler(filters.TEXT, handlers.mass_process),
-                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$') # 🔥 Fix
+                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$')
             ],
             config.WAITING_MASS_CONFIRM: [CallbackQueryHandler(handlers.mass_confirm)]
         },
@@ -76,7 +82,7 @@ if __name__ == '__main__':
         states={
             config.WAITING_SUPPORT_ID: [
                 MessageHandler(filters.TEXT, handlers.sup_save),
-                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$') # 🔥 Fix
+                CallbackQueryHandler(handlers.cancel_callback, pattern='^no$')
             ]
         },
         fallbacks=[CommandHandler('cancel', handlers.cancel_op)]
@@ -120,8 +126,5 @@ if __name__ == '__main__':
     
     print("Bot Running...")
     app.run_polling()
-
-
-
 
 
