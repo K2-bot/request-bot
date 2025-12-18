@@ -310,7 +310,6 @@ async def setting_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========================================
 # 🛒 ORDERS & MASS ORDERS (HTML)
 # =========================================
-
 async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user; db_user = get_user(user.id)
     if not db_user: return await start(update, context)
@@ -332,7 +331,6 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     svc = res.data[0]; context.user_data['order_svc'] = svc
     
-    # Prompt with Cancel Button
     link_type = get_link_prompt(svc['service_name'])
     prompt = f"🔗 <b>Enter {link_type} for:</b>\n<i>{html.escape(svc['service_name'])}</i>"
     
@@ -350,7 +348,6 @@ async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return config.ORDER_WAITING_LINK
 
 async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Check if user clicked cancel (handled by callbackQuery usually, but if they type text:)
     if update.message.text == "/cancel":
         await update.message.reply_text("🚫 Canceled.")
         return ConversationHandler.END
@@ -358,20 +355,14 @@ async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['order_link'] = update.message.text.strip()
     svc = context.user_data['order_svc']
     
-    # 🔥 Cancel Button (Inline) for Quantity Step
     kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
     
-    await update.message.reply_text(
-        f"📊 <b>Quantity</b>\nMin: {svc['min']} - Max: {svc['max']}", 
-        parse_mode='HTML', 
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+    await update.message.reply_text(f"📊 <b>Quantity</b>\nMin: {svc['min']} - Max: {svc['max']}", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
     return config.ORDER_WAITING_QTY
 
 async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: qty = int(update.message.text.strip())
     except: 
-        # Show Error with Cancel Button again
         kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
         await update.message.reply_text("❌ Numbers only. Try again:", reply_markup=InlineKeyboardMarkup(kb))
         return config.ORDER_WAITING_QTY
@@ -442,7 +433,14 @@ async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await query.edit_message_text(f"❌ <b>Error Occurred:</b>\n{str(e)}", parse_mode='HTML')
     
-    await help_command(update, context); return ConversationHandler.ENDEND
+    await help_command(update, context); return ConversationHandler.END
+
+# 🔥 GENERIC CANCEL CALLBACK
+async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🚫 Canceled.")
+    return ConversationHandler.END
 
 async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 <b>Mass Order</b>\nFormat: <code>ID Link Qty</code>\n(Space separated, One per line)", parse_mode='HTML')
