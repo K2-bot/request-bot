@@ -4,6 +4,7 @@ import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 import config
+import unicodedata  #
 from db import supabase, get_user
 import config
 import html
