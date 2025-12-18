@@ -514,14 +514,276 @@ async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             o_data = {
                 "email": user['email'],
+async def new_order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user; db_user = get_user(user.id)
+    if not db_user: return await start(update, context)
+    
+    target_id = None
+    if context.args: target_id = context.args[0]
+    elif context.user_data.get('deep_link_id'): target_id = context.user_data.pop('deep_link_id')
+    
+    if not target_id:
+        await update.message.reply_text("Usage: <code>/neworder ID</code>", parse_mode='HTML')
+        return ConversationHandler.END
+        
+    if "order_" in target_id: target_id = target_id.split("_")[1]
+    
+    res = supabase.table('services').select("*").eq('id', target_id).execute()
+    if not res.data:
+        await update.message.reply_text("❌ ID Not Found.")
+        return ConversationHandler.END
+        
+    svc = res.data[0]; context.user_data['order_svc'] = svc
+    
+    link_type = get_link_prompt(svc['service_name'])
+    prompt = f"🔗 <b>Enter {link_type} for:</b>\n<i>{html.escape(svc['service_name'])}</i>"
+    
+    if svc.get('use_type') == 'Telegram username':
+        prompt += "\n\n(Example: @username or https://t.me/...)"
+    
+    kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+    
+    await update.message.reply_text(
+        f"{format_for_user(svc, db_user.get('language','en'), db_user.get('currency','USD'))}\n\n{prompt}", 
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
+    return config.ORDER_WAITING_LINK
+
+async def new_order_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "/cancel":
+        await update.message.reply_text("🚫 Canceled.")
+        return ConversationHandler.END
+
+    context.user_data['order_link'] = update.message.text.strip()
+    svc = context.user_data['order_svc']
+    
+    # 🔥 CHECK TYPE: If Custom Comments, ask for comments instead of Quantity
+    if svc.get('use_type') == 'Custom Comments':
+        kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+        await update.message.reply_text(
+            "💬 <b>Enter Custom Comments:</b>\n(One comment per line)\n\nExample:\nGood Post!\nNice video\nAmazing", 
+            parse_mode='HTML', 
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return config.ORDER_WAITING_COMMENTS
+
+    # Default Flow (Ask Quantity)
+    kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+    await update.message.reply_text(f"📊 <b>Quantity</b>\nMin: {svc['min']} - Max: {svc['max']}", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+    return config.ORDER_WAITING_QTY
+
+# 🔥 NEW: Handle Custom Comments Input
+async def new_order_comments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw_text = update.message.text.strip()
+    comments_list = [line.strip() for line in raw_text.split('\n') if line.strip()]
+    
+    if not comments_list:
+        await update.message.reply_text("❌ Empty comments. Please try again.")
+        return config.ORDER_WAITING_COMMENTS
+        
+    qty = len(comments_list) # Auto-calculate Quantity
+    svc = context.user_data['order_svc']
+    
+    if qty < svc['min'] or qty > svc['max']:
+        await update.message.reply_text(f"❌ Invalid Quantity ({qty}).\nMin: {svc['min']} - Max: {svc['max']}\nPlease add/remove lines.")
+        return config.ORDER_WAITING_COMMENTS
+
+    context.user_data['order_qty'] = qty
+    context.user_data['custom_comments'] = comments_list # Save for DB
+    
+    # Proceed to Confirmation
+    cost = calculate_cost(qty, svc)
+    context.user_data['cost_usd'] = cost
+    
+    user = get_user(update.effective_user.id)
+    cost_display = format_currency(cost, user.get('currency', 'USD'))
+    text = get_text(user.get('language','en'), 'confirm_order', cost=cost_display)
+    text += f"\n📝 Comments: {qty} lines"
+    
+    kb = [[InlineKeyboardButton("✅ Yes", callback_data="yes"), InlineKeyboardButton("❌ No", callback_data="no")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+    return config.ORDER_CONFIRM
+
+async def new_order_qty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: qty = int(update.message.text.strip())
+    except: 
+        kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+        await update.message.reply_text("❌ Numbers only. Try again:", reply_markup=InlineKeyboardMarkup(kb))
+        return config.ORDER_WAITING_QTY
+        
+    svc = context.user_data['order_svc']
+    if qty < svc['min'] or qty > svc['max']:
+        kb = [[InlineKeyboardButton("🚫 Cancel", callback_data="no")]]
+        await update.message.reply_text(f"❌ Invalid Qty. ({svc['min']}-{svc['max']})", reply_markup=InlineKeyboardMarkup(kb))
+        return config.ORDER_WAITING_QTY
+        
+    context.user_data['order_qty'] = qty
+    context.user_data.pop('custom_comments', None) # Clear previous data if any
+    
+    cost = calculate_cost(qty, svc)
+    context.user_data['cost_usd'] = cost
+    
+    user = get_user(update.effective_user.id)
+    cost_display = format_currency(cost, user.get('currency', 'USD'))
+    text = get_text(user.get('language','en'), 'confirm_order', cost=cost_display)
+    
+    kb = [[InlineKeyboardButton("✅ Yes", callback_data="yes"), InlineKeyboardButton("❌ No", callback_data="no")]]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+    return config.ORDER_CONFIRM
+
+async def new_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    if query.data == 'no':
+        await query.edit_message_text("🚫 Canceled.")
+        return ConversationHandler.END
+        
+    user = get_user(update.effective_user.id)
+    cost = context.user_data['cost_usd']
+    svc = context.user_data['order_svc']
+    qty = context.user_data['order_qty']
+    link = context.user_data['order_link']
+    comments = context.user_data.get('custom_comments', None) # Get comments if exists
+    
+    if float(user['balance_usd']) < cost:
+        await query.edit_message_text(f"⚠️ <b>Insufficient Balance</b>\n\n💵 Cost: ${cost:.4f}\n💰 Your Balance: ${user['balance_usd']:.4f}\n\nPlease top up.", parse_mode='HTML')
+        return ConversationHandler.END
+        
+    try:
+        new_bal = float(user['balance_usd']) - cost
+        supabase.table('users').update({'balance_usd': new_bal}).eq('telegram_id', update.effective_user.id).execute()
+        
+        per_qty = int(svc.get('per_quantity', 1000))
+        if per_qty < 1: per_qty = 1000
+        buy_price = float(svc.get('buy_price', 0))
+        buy_charge = (buy_price / per_qty) * qty
+        
+        o_data = {
+            "email": user['email'],
+            "service": svc['service_name'],
+            "quantity": qty,
+            "link": link,
+            "day": 1,
+            "remain": qty,
+            "start_count": 0,
+            "buy_charge": round(buy_charge, 6),
+            "sell_charge": round(cost, 6),
+            "supplier_service_id": svc['service_id'],
+            "supplier_name": svc['source'],
+            "status": "Pending",
+            "UsedType": svc['use_type'],
+            "supplier_order_id": 0
+        }
+        
+        # 🔥 Insert Comments if available
+        if comments:
+            o_data['comments'] = comments
+        
+        inserted = supabase.table('WebsiteOrders').insert(o_data).execute()
+        await query.edit_message_text(f"✅ <b>Order Queued!</b>\nID: {inserted.data[0]['id']}", parse_mode='HTML')
+        
+    except Exception as e:
+        await query.edit_message_text(f"❌ <b>Error Occurred:</b>\n{str(e)}", parse_mode='HTML')
+    
+    await help_command(update, context); return ConversationHandler.END
+
+# 🔥 GENERIC CANCEL CALLBACK
+async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🚫 Canceled.")
+    return ConversationHandler.END
+
+# --- MASS ORDER (STRICT FILTER) ---
+async def mass_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🚀 <b>Mass Order</b>\nFormat: <code>ID Link Qty</code>\n(Space separated, One per line)", parse_mode='HTML')
+    return config.WAITING_MASS_INPUT
+
+async def mass_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lines = update.message.text.strip().split('\n'); valid = []; total = 0.0
+    details_msg = "📝 <b>Order Details:</b>\n\n"
+    
+    for line in lines:
+        try:
+            line = line.replace('|', ' ') 
+            p = line.split()
+            if len(p) != 3: continue
+            res = supabase.table('services').select("*").eq('id', p[0]).execute()
+            if res.data:
+                svc = res.data[0]
+                
+                # 🔥 STRICT FILTER: Only allow Default, Package, Promote, etc. (Link+Qty Types)
+                # Reject "Custom Comments", "Poll", etc.
+                if svc.get('use_type') in ['Custom Comments', 'Poll', 'Comment Likes']:
+                    continue # Skip this line
+                    
+                cost = calculate_cost(int(p[2]), svc); total += cost
+                valid.append({'svc': svc, 'link': p[1], 'qty': int(p[2]), 'cost': cost})
+                
+                details_msg += (
+                    f"📦 <b>{html.escape(svc['service_name'])}</b>\n"
+                    f"🔗 {html.escape(p[1])}\n"
+                    f"🔢 Qty: {p[2]} | 💰 ${cost:.4f}\n"
+                    f"--------------------\n"
+                )
+        except: continue
+        
+    context.user_data['mass_queue'] = valid; context.user_data['mass_total'] = total
+    curr = get_user(update.effective_user.id).get('currency', 'USD')
+    
+    if not valid:
+         await update.message.reply_text("❌ No valid orders found.\nNote: 'Custom Comments' services are not supported in Mass Order.", parse_mode='HTML')
+         return config.WAITING_MASS_INPUT
+
+    confirm_msg = (
+        f"{details_msg}"
+        f"📊 <b>Summary:</b>\n"
+        f"✅ Valid Orders: {len(valid)}\n"
+        f"💵 Total Cost: {format_currency(total, curr)}\n\n"
+        f"❓ <b>Confirm Order?</b>"
+    )
+    
+    await update.message.reply_text(confirm_msg, parse_mode='HTML', reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Yes", callback_data="mass_yes"), InlineKeyboardButton("❌ No", callback_data="mass_no")]]))
+    return config.WAITING_MASS_CONFIRM
+
+async def mass_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    if query.data == 'mass_no':
+        await query.edit_message_text("🚫 Canceled.")
+        await help_command(update, context)
+        return ConversationHandler.END
+        
+    user = get_user(update.effective_user.id); total = context.user_data['mass_total']
+    
+    if float(user['balance_usd']) < total:
+        await query.edit_message_text(f"⚠️ <b>Insufficient Balance</b>\nNeeded: ${total}\nHas: ${user['balance_usd']}", parse_mode='HTML')
+        await help_command(update, context)
+        return ConversationHandler.END
+        
+    try:
+        new_bal = float(user['balance_usd']) - total
+        supabase.table('users').update({'balance_usd': new_bal}).eq('telegram_id', update.effective_user.id).execute()
+        
+        for o in context.user_data['mass_queue']:
+            svc = o['svc']
+            qty = o['qty']
+            
+            per_qty = int(svc.get('per_quantity', 1000))
+            if per_qty < 1: per_qty = 1000
+            
+            buy_price = float(svc.get('buy_price', 0))
+            buy_charge = (buy_price / per_qty) * qty
+            
+            o_data = {
+                "email": user['email'],
                 "service": svc['service_name'],
                 "quantity": qty,
                 "link": o['link'],
                 "day": 1,
                 "remain": qty,
                 "start_count": 0,
-                "buy_charge": round(buy_charge, 6),       # ✅ Correct Buy Charge
-                "sell_charge": round(o['cost'], 6),       # ✅ Correct Sell Charge
+                "buy_charge": round(buy_charge, 6),
+                "sell_charge": round(o['cost'], 6),
                 "supplier_service_id": svc['service_id'],
                 "supplier_name": svc['source'],
                 "status": "Pending",
