@@ -175,9 +175,25 @@ def process_pending_orders_loop():
                     except: sell_usd = 0.0; mmk_price = 0.0
 
                     if supplier == "smmgen":
-                        payload = {'key': config.SMM_API_KEY, 'action': 'add', 'service': o['supplier_service_id'], 'link': o['link'], 'quantity': o['quantity']}
-                        if o.get('comments'): payload['comments'] = "\n".join(o['comments'])
+                        payload = {
+                            'key': config.SMM_API_KEY, 
+                            'action': 'add', 
+                            'service': o['supplier_service_id'], 
+                            'link': o['link'], 
+                            'quantity': o['quantity']
+                        }
+                        
+                        # Comments ရှိရင် ထည့်မည်
+                        if o.get('comments'): 
+                            payload['comments'] = "\n".join(o['comments'])
+
+                        # 🔥 FIX: Username Logic
+                        if o.get('UsedType') == 'Comment Likes' and o.get('CommentOwner'):
+                            payload['username'] = o['CommentOwner']
+
+                        # 🔥 Requests.post must be aligned with `if supplier == "smmgen":`
                         res = requests.post(config.SMM_API_URL, data=payload, timeout=30).json()
+
                         if 'order' in res:
                             sup_id = str(res['order'])
                             supabase.table("WebsiteOrders").update({"status": "Processing", "supplier_order_id": sup_id}).eq("id", o["id"]).execute()
